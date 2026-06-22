@@ -1,0 +1,32 @@
+# Build output
+build/
+dist/
+*.spec
+
+# PyInstaller
+StarTrail_v*.zip
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data (large auto-downloaded)
+data/de421.bsp
+
+# OS
+Thumbs.db
+.DS_Store
