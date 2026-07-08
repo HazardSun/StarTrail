@@ -25,6 +25,7 @@ env/
 *.swo
 
 # Data (large auto-downloaded)
+de421.bsp
 data/de421.bsp
 
 # OS
