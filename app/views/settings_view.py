@@ -195,27 +195,41 @@ class SettingsView(QWidget):
         QTimer.singleShot(50, lambda: self._do_auto_locate(btn))
 
     def _do_auto_locate(self, btn):
-        try:
-            city, lat, lon = auto_detect_location()
-            if city:
-                idx = self.city_combo.findText(city)
-                if idx >= 0:
-                    self.city_combo.setCurrentIndex(idx)
-                else:
-                    self.city_combo.setCurrentText(city)
-                config.city_name = city
-            config.latitude = lat
-            config.longitude = lon
-            config.save()
-            self.coord_label.setText(f"纬度: {lat:.4f}°N  |  经度: {lon:.4f}°E")
-            self.locate_status.setText(f"✓ 已定位到 {city}" if city else "✓ 已定位")
-            self.locate_status.setStyleSheet(f"color: {Theme.SUCCESS};")
-        except Exception as e:
-            self.locate_status.setText(f"✗ 定位失败: 网络错误")
-            self.locate_status.setStyleSheet(f"color: {Theme.DANGER};")
-        finally:
-            btn.setEnabled(True)
+        from app.core.background_worker import run_in_background
+
+        def _fetch():
+            return auto_detect_location()
+
+        def _on_done(result):
+            try:
+                city, lat, lon = result
+                if city:
+                    idx = self.city_combo.findText(city)
+                    if idx >= 0:
+                        self.city_combo.setCurrentIndex(idx)
+                    else:
+                        self.city_combo.setCurrentText(city)
+                    config.city_name = city
+                config.latitude = lat
+                config.longitude = lon
+                config.save()
+                self.city_combo.setCurrentText(config.city_name)
+                self.locate_status.setText(f"已定位到: {config.city_name}")
+                self.locate_status.setStyleSheet(f"color: {Theme.SUCCESS};")
+                btn.setEnabled(True)
+                btn.setText("🌐 自动定位")
+            except Exception as ex:
+                self.locate_status.setText(f"定位失败: {ex}")
+                self.locate_status.setStyleSheet(f"color: {Theme.DANGER};")
+                btn.setEnabled(True)
+                btn.setText("🌐 自动定位")
+
+        run_in_background(_fetch, on_finished=_on_done, on_error=lambda e: (
+            self.locate_status.setText(f"定位失败: {e}"),
+            self.locate_status.setStyleSheet(f"color: {Theme.DANGER};"),
+            btn.setEnabled(True),
             btn.setText("🌐 自动定位")
+        ))
 
     def _build_api_card(self):
         card = self._make_card("🔑 API 密钥")
@@ -299,16 +313,28 @@ class SettingsView(QWidget):
         QTimer.singleShot(50, lambda: self._do_test_nasa(btn))
 
     def _do_test_nasa(self, btn):
+        from app.core.background_worker import run_in_background
         key = self.nasa_input.text().strip()
-        ok, msg = test_nasa_key(key)
-        if ok:
-            self.nasa_status.setText("✓ 连接成功")
-            self.nasa_status.setStyleSheet(f"color: {Theme.SUCCESS};")
-        else:
-            self.nasa_status.setText(f"✗ {msg[:14]}")
-            self.nasa_status.setStyleSheet(f"color: {Theme.DANGER};")
-        btn.setEnabled(True)
-        btn.setText("测试")
+
+        def _compute():
+            return test_nasa_key(key)
+
+        def _on_done(res):
+            ok, msg = res
+            if ok:
+                self.nasa_status.setText("✓ 连接成功")
+                self.nasa_status.setStyleSheet(f"color: {Theme.SUCCESS};")
+            else:
+                self.nasa_status.setText(f"✗ {msg[:14]}")
+                self.nasa_status.setStyleSheet(f"color: {Theme.DANGER};")
+            btn.setEnabled(True)
+            btn.setText("测试")
+
+        run_in_background(_compute, on_finished=_on_done, on_error=lambda e: (
+            self.nasa_status.setText("✗ 测试失败"),
+            self.nasa_status.setStyleSheet(f"color: {Theme.DANGER};"),
+            btn.setEnabled(True), btn.setText("测试")
+        ))
 
     def _test_weather(self, btn):
         key = self.weather_input.text().strip()
@@ -324,16 +350,28 @@ class SettingsView(QWidget):
         QTimer.singleShot(50, lambda: self._do_test_weather(btn))
 
     def _do_test_weather(self, btn):
+        from app.core.background_worker import run_in_background
         key = self.weather_input.text().strip()
-        ok, msg = test_weather_key(key)
-        if ok:
-            self.weather_status.setText("✓ 连接成功")
-            self.weather_status.setStyleSheet(f"color: {Theme.SUCCESS};")
-        else:
-            self.weather_status.setText(f"✗ {msg[:12]}")
-            self.weather_status.setStyleSheet(f"color: {Theme.DANGER};")
-        btn.setEnabled(True)
-        btn.setText("测试")
+
+        def _compute():
+            return test_weather_key(key)
+
+        def _on_done(res):
+            ok, msg = res
+            if ok:
+                self.weather_status.setText("✓ 连接成功")
+                self.weather_status.setStyleSheet(f"color: {Theme.SUCCESS};")
+            else:
+                self.weather_status.setText(f"✗ {msg[:12]}")
+                self.weather_status.setStyleSheet(f"color: {Theme.DANGER};")
+            btn.setEnabled(True)
+            btn.setText("测试")
+
+        run_in_background(_compute, on_finished=_on_done, on_error=lambda e: (
+            self.weather_status.setText("✗ 测试失败"),
+            self.weather_status.setStyleSheet(f"color: {Theme.DANGER};"),
+            btn.setEnabled(True), btn.setText("测试")
+        ))
 
     def _build_pro_card(self):
         self.pro_card = self._make_card("🔬 专业模式设置")

@@ -29,6 +29,14 @@ EXCLUDE = [
     "PySide6.QtWebEngineWidgets", "PySide6.QtWebSockets", "PySide6.QtWebView",
     "PySide6.QtXml", "PySide6.QtCanvasPainter",
     "skyfield.tests", "skyfield.data.hipparcos",
+    # Large ML packages not used at runtime
+    "torch", "torchvision", "tensorflow", "transformers",
+    "scipy", "scipy.special", "scipy.spatial", "scipy.stats", "scipy.linalg",
+    "scipy.io", "scipy.sparse", "scipy.optimize", "scipy.fft", "scipy.signal",
+    "sklearn", "pandas", "matplotlib", "PIL", "PIL.ImageFilter",
+    "openpyxl", "cffi", "pycparser", "lxml", "fsspec", "pydantic",
+    "rich", "pygments", "jinja2", "regex",
+    "win32com", "charset_normalizer",
 ]
 
 cmd = [str(PYTHON), "-m", "PyInstaller",

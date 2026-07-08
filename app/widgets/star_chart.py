@@ -180,15 +180,38 @@ class StarChart(QWidget):
 
     def refresh(self):
         dt = datetime.now()
-        self._stars = sky.get_bright_stars_altaz(dt, self._device_config["mag_limit"])
-        self._planets = sky.get_planet_positions(dt)
-        self._sun = sky.get_sun_position(dt)
-        self._moon = sky.get_moon_position(dt)
-        self._satellites = sky.get_satellite_positions(dt) if config.is_pro else []
-        self._const_lines = sky.get_constellation_lines()
-        self._dsos = sky.get_dso_list()
-        self._dso_visibility = sky.get_dso_visibility(dt) if config.is_pro else []
         self.update()
+        self._refresh_async(dt)
+
+    def _refresh_async(self, dt):
+        from app.core.background_worker import run_in_background
+
+        def _compute():
+            mag_limit = self._device_config["mag_limit"]
+            stars = sky.get_bright_stars_altaz(dt, mag_limit)
+            planets = sky.get_planet_positions(dt)
+            sun = sky.get_sun_position(dt)
+            moon = sky.get_moon_position(dt)
+            const_lines = sky.get_constellation_lines()
+            dsos = sky.get_dso_list()
+            dso_vis = sky.get_dso_visibility(dt) if config.is_pro else []
+            return stars, planets, sun, moon, const_lines, dsos, dso_vis
+
+        def _on_done(result):
+            try:
+                stars, planets, sun, moon, const_lines, dsos, dso_vis = result
+                self._stars = stars
+                self._planets = planets
+                self._sun = sun
+                self._moon = moon
+                self._const_lines = const_lines
+                self._dsos = dsos
+                self._dso_visibility = dso_vis
+                self.update()
+            except Exception:
+                pass
+
+        run_in_background(_compute, on_finished=_on_done)
 
     def _refresh_network(self):
         """Refresh satellite + aircraft data in background threads."""

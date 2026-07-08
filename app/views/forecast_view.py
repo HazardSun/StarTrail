@@ -409,9 +409,16 @@ class ForecastView(QWidget):
             QTimer.singleShot(200, self._try_address)
 
     def _try_address(self):
-        addr = get_full_address()
-        if addr:
-            self.location_detail.setText(f"📍 {addr}")
+        from app.core.background_worker import run_in_background
+
+        def _fetch():
+            return get_full_address()
+
+        def _on_done(addr):
+            if addr:
+                self.location_detail.setText(f"📍 {addr}")
+
+        run_in_background(_fetch, on_finished=_on_done, on_error=lambda e: None)
 
     def on_mode_changed(self, mode):
         self.pro_section.setVisible(mode == "professional")
@@ -429,13 +436,28 @@ class ForecastView(QWidget):
         now = datetime.now().timestamp()
         if self._weather_cache and (now - self._weather_cache_time) < 120:
             weather = self._weather_cache
-        else:
-            weather = get_weather()
-            if isinstance(weather, dict) and "error" not in weather:
-                self._weather_cache = weather
-                self._weather_cache_time = now
+            self._apply_weather(weather)
+            return
 
-        forecast = get_forecast()
+        from app.core.background_worker import run_in_background
+
+        def _fetch():
+            return get_weather(), get_forecast()
+
+        def _on_done(result):
+            try:
+                weather, forecast = result
+                if isinstance(weather, dict) and "error" not in weather:
+                    self._weather_cache = weather
+                    self._weather_cache_time = datetime.now().timestamp()
+                self._apply_weather(weather)
+                self._apply_forecast(forecast)
+            except Exception:
+                pass
+
+        run_in_background(_fetch, on_finished=_on_done, on_error=lambda e: None)
+
+    def _apply_weather(self, weather):
 
         moon_phase = getattr(self, '_cached_moon_phase', {}) or sky.get_moon_phase()
 
@@ -509,16 +531,12 @@ class ForecastView(QWidget):
             self.score_desc.setStyleSheet(f"color: {Theme.TEXT_SECONDARY};")
             self._update_breakdown([])
 
+    def _apply_forecast(self, forecast):
         if isinstance(forecast, dict) and "error" not in forecast:
             self._update_precip(forecast)
         else:
-            err = forecast.get("error", "")
-            if err == "no_key":
-                for lbl in ["2小时", "8小时", "12小时", "24小时"]:
-                    self._precip_labels[lbl].setText("--")
-            else:
-                for lbl in ["2小时", "8小时", "12小时", "24小时"]:
-                    self._precip_labels[lbl].setText("--")
+            for lbl in ["2小时", "8小时", "12小时", "24小时"]:
+                self._precip_labels[lbl].setText("--")
 
     def _update_precip(self, forecast):
         periods = [("2小时", 2), ("8小时", 8), ("12小时", 12), ("24小时", 24)]
@@ -539,37 +557,43 @@ class ForecastView(QWidget):
         self.moon_name.setText(moon["name"])
         self.moon_illum.setText(f"照明度: {moon['illumination']}")
 
-        sun_times = sky.get_sun_times()
-        if sun_times:
-            self.sunrise_label.setText(sun_times.get("sunrise", "--:--"))
-            self.sunset_label.setText(sun_times.get("sunset", "--:--"))
+        from app.core.background_worker import run_in_background
 
-        moon_times = sky.get_moon_times()
-        if moon_times:
-            self.moonrise_label.setText(moon_times.get("moonrise", "--:--"))
-            self.moonset_label.setText(moon_times.get("moonset", "--:--"))
+        def _compute():
+            return sky.get_sun_times(), sky.get_moon_times(), sky.get_planet_positions()
 
-        for i in reversed(range(self.planet_list_layout.count())):
-            w = self.planet_list_layout.itemAt(i).widget()
-            if w:
-                w.deleteLater()
+        def _on_done(result):
+            try:
+                sun_times, moon_times, planets = result
+                if sun_times:
+                    self.sunrise_label.setText(sun_times.get("sunrise", "--:--"))
+                    self.sunset_label.setText(sun_times.get("sunset", "--:--"))
+                if moon_times:
+                    self.moonrise_label.setText(moon_times.get("moonrise", "--:--"))
+                    self.moonset_label.setText(moon_times.get("moonset", "--:--"))
+                for i in reversed(range(self.planet_list_layout.count())):
+                    w = self.planet_list_layout.itemAt(i).widget()
+                    if w:
+                        w.deleteLater()
+                if planets:
+                    for p in planets:
+                        p_label = QLabel(
+                            f"● {p['name']}  "
+                            f"高度: {p['altitude']:.0f}°  "
+                            f"星等: {p.get('magnitude', 0):.1f}"
+                        )
+                        p_label.setFont(Theme.body())
+                        p_label.setStyleSheet(f"color: {p.get('color', Theme.TEXT_SECONDARY)};")
+                        self.planet_list_layout.addWidget(p_label)
+                else:
+                    no_p = QLabel("今晚没有可见行星")
+                    no_p.setFont(Theme.body())
+                    no_p.setStyleSheet(f"color: {Theme.TEXT_MUTED};")
+                    self.planet_list_layout.addWidget(no_p)
+            except Exception:
+                pass
 
-        planets = sky.get_planet_positions()
-        if planets:
-            for p in planets:
-                p_label = QLabel(
-                    f"● {p['name']}  "
-                    f"高度: {p['altitude']:.0f}°  "
-                    f"星等: {p.get('magnitude', 0):.1f}"
-                )
-                p_label.setFont(Theme.body())
-                p_label.setStyleSheet(f"color: {p.get('color', Theme.TEXT_SECONDARY)};")
-                self.planet_list_layout.addWidget(p_label)
-        else:
-            no_p = QLabel("今晚没有可见行星")
-            no_p.setFont(Theme.body())
-            no_p.setStyleSheet(f"color: {Theme.TEXT_MUTED};")
-            self.planet_list_layout.addWidget(no_p)
+        run_in_background(_compute, on_finished=_on_done, on_error=lambda e: None)
 
     def _update_pro_data(self):
         data = [f"观测坐标: {config.latitude}°N, {config.longitude}°E"]
@@ -580,19 +604,28 @@ class ForecastView(QWidget):
         moon = getattr(self, '_cached_moon_phase', {}) or sky.get_moon_phase()
         data.append(f"月相参数: {moon['phase']:.3f} (0=新月, 0.5=满月)")
 
-        window = sky.get_best_window()
-        if window:
-            data.append(f"最佳观测: {window['start']} - {window['end']}")
-            data.append(f"窗口时长: {window['duration_hours']}h  质量: {window['quality']}")
-
         jd = sky.get_jd()
         mjd = sky.get_mjd()
         data.append(f"JD: {jd}  |  MJD: {mjd}")
 
-        weather = get_weather()
-        if isinstance(weather, dict) and "error" not in weather:
-            data.append(f"气压: {weather.get('main', {}).get('pressure', '--')} hPa")
-        else:
-            data.append("天气数据: 不可用")
+        from app.core.background_worker import run_in_background
 
-        self.pro_info.setText("\n".join(data))
+        def _compute():
+            return sky.get_best_window()
+
+        def _on_done(window):
+            try:
+                wdata = list(data)
+                if window:
+                    wdata.append(f"最佳观测: {window['start']} - {window['end']}")
+                    wdata.append(f"窗口时长: {window['duration_hours']}h  质量: {window['quality']}")
+                if self._weather_cache and isinstance(self._weather_cache, dict):
+                    wdata.append(f"气压: {self._weather_cache.get('main', {}).get('pressure', '--')} hPa")
+                else:
+                    wdata.append("天气数据: 不可用")
+                if hasattr(self, "pro_info"):
+                    self.pro_info.setText("\n".join(wdata))
+            except Exception:
+                pass
+
+        run_in_background(_compute, on_finished=_on_done, on_error=lambda e: None)

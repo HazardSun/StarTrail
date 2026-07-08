@@ -66,6 +66,7 @@ class GLHybridChart(QOpenGLWidget):
         self._hit_moons = []; self._hit_sats = []; self._hit_ac = []; self._hit_dsos_list = []
         self._time = 0.0
         self._tick = QTimer(); self._tick.timeout.connect(self._on_tick); self._tick.start(33)
+        self._idle = True
         self._refresh_timer = QTimer(); self._refresh_timer.timeout.connect(self.refresh); self._refresh_timer.start(600000)
         self._net_timer = QTimer(); self._net_timer.timeout.connect(self._refresh_net); self._net_timer.start(600000)
         QTimer.singleShot(3000, self._refresh_net)
@@ -81,23 +82,64 @@ class GLHybridChart(QOpenGLWidget):
 
     def refresh(self):
         dt = datetime.now()
-        self._stars = sky.get_bright_stars_altaz(dt, self._device_config["mag_limit"])
-        self._planets = sky.get_planet_positions(dt)
-        self._sun = sky.get_sun_position(dt)
-        self._moon = sky.get_moon_position(dt)
-        self._satellites = sky.get_satellite_positions(dt) if config.is_pro else []
-        self._const_lines = sky.get_constellation_lines()
-        self._dsos = sky.get_dso_list()
-        self._dso_visibility = sky.get_dso_visibility(dt) if config.is_pro else []
-        self._upload_stars(); self.update()
+        self.update()
+        self._refresh_async(dt)
+
+    def _refresh_async(self, dt):
+        from app.core.background_worker import run_in_background
+
+        def _compute():
+            mag_limit = self._device_config["mag_limit"]
+            stars = sky.get_bright_stars_altaz(dt, mag_limit)
+            planets = sky.get_planet_positions(dt)
+            sun = sky.get_sun_position(dt)
+            moon = sky.get_moon_position(dt)
+            const_lines = sky.get_constellation_lines()
+            dsos = sky.get_dso_list()
+            dso_vis = sky.get_dso_visibility(dt) if config.is_pro else []
+            return stars, planets, sun, moon, const_lines, dsos, dso_vis
+
+        def _on_done(result):
+            try:
+                stars, planets, sun, moon, const_lines, dsos, dso_vis = result
+                self._stars = stars
+                self._planets = planets
+                self._sun = sun
+                self._moon = moon
+                self._const_lines = const_lines
+                self._dsos = dsos
+                self._dso_visibility = dso_vis
+                self._upload_pending = True
+                self.update()
+            except Exception:
+                pass
+
+        run_in_background(_compute, on_finished=_on_done)
 
     def _refresh_net(self):
         if not config.is_pro: return
         from app.core.background_worker import run_in_background
-        d = sky.get_satellite_positions_bg()
-        run_in_background(compute_satellites_bg, lambda r: setattr(self,'_satellites',r or []) or self.update(), args=(d,))
 
-    def _on_tick(self): self._time += 0.033; self.update()
+        def _fetch_and_compute():
+            d = sky.get_satellite_positions_bg()
+            return compute_satellites_bg(d)
+
+        run_in_background(_fetch_and_compute,
+                          on_finished=lambda r: (setattr(self, '_satellites', r or []), self.update()),
+                          on_error=lambda e: None)
+
+    def _on_tick(self):
+        if not self._idle:
+            self._time += 0.033
+            self.update()
+
+    def _start_animation(self):
+        self._idle = False
+        if not self._tick.isActive():
+            self._tick.start(33)
+
+    def _stop_animation(self):
+        self._idle = True
 
     def guide_goto(self, alt, az):
         """Rotate view to center on given altitude/azimuth."""
@@ -161,6 +203,9 @@ class GLHybridChart(QOpenGLWidget):
     def paintGL(self):
         w,h = self.width(),self.height()
         if w<4 or h<4: return
+        if getattr(self, '_upload_pending', False):
+            self._upload_pending = False
+            self._upload_stars()
         self._setup_view(w,h)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT|GL.GL_DEPTH_BUFFER_BIT)
         self._draw_skybox()
@@ -299,7 +344,13 @@ class GLHybridChart(QOpenGLWidget):
 
     def _approx_lst(self):
         from app.api.astronomy_api import SkyCalculator
-        return SkyCalculator.get_jd()%1*24
+        from app.config import config
+        dt = datetime.now()
+        jd = SkyCalculator._julian_day(dt)
+        gst = 280.46061837 + 360.98564736629 * (jd - 2451545.0)
+        gst = gst % 360
+        lst = gst + config.longitude
+        return (lst / 15) % 24
 
     def _ov_hover(self,p):
         if not self._hovered: return
@@ -328,9 +379,11 @@ class GLHybridChart(QOpenGLWidget):
     def wheelEvent(self,e):
         f=1.1 if e.angleDelta().y()>0 else 1/1.1
         self._view_scale=max(0.3,min(8,self._view_scale*f)); self.update()
+        self._start_animation()
 
     def mousePressEvent(self,e):
         self._press=e.position(); self._pan_sx=self._rot_z; self._pan_sy=self._rot_x
+        self._start_animation()
 
     def mouseMoveEvent(self,e):
         self._mouse_pos=e.position()
@@ -350,6 +403,7 @@ class GLHybridChart(QOpenGLWidget):
             else: self._selected=None
             self.update()
         self._press=None
+        self._stop_animation()
 
     def mouseDoubleClickEvent(self,e):
         pos=e.position(); hit=self._hit_test(pos)

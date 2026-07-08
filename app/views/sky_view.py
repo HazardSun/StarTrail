@@ -51,11 +51,12 @@ class SkyView(QWidget):
     def _build_guide_panel(self, parent):
         self._guide_panel = None
         self._guide_parent = parent
-        QTimer.singleShot(0, self._load_guide)
+        from app.core.background_worker import run_in_background
+        run_in_background(get_tonight_guide, on_finished=self._on_guide_loaded,
+                          on_error=lambda e: None)
 
-    def _load_guide(self):
+    def _on_guide_loaded(self, guide_data):
         try:
-            guide_data = get_tonight_guide()
             if guide_data and guide_data.get("targets"):
                 self._guide_card = CollapsibleCard("🌟 今晚观星指南")
                 self._guide_panel = GuidePanel(guide_data)
@@ -349,28 +350,37 @@ class SkyView(QWidget):
     def _force_refresh_aircraft(self):
         self.ac_label.setText("正在刷新航班数据...")
         from app.api.adsb_api import fetch_aircraft, add_aircraft_trajectories, fetch_aircraft_registrations
-        try:
+        from app.core.background_worker import run_in_background
+
+        def _do_fetch():
             dt = datetime.now()
             ac = fetch_aircraft(dt)
             if ac:
                 add_aircraft_trajectories(ac)
                 fetch_aircraft_registrations(ac)
-                visible = [a for a in ac if a.get("altitude", -90) > 0]
-                lines = [f"✈ 追踪 {len(ac)} 架  |  可见 {len(visible)} 架"]
-                for a in sorted(visible, key=lambda x: -x["altitude"])[:5]:
-                    lines.append(f"  {a['callsign']:>6s}  {a['altitude_ft']:.0f}ft  "
-                                 f"Alt {a['altitude']:.0f}°  {a['distance_km']:.0f}km")
-                if len(visible) > 5:
-                    lines.append(f"  ...及 {len(visible)-5} 架更多")
-                self._cached_ac = "\n".join(lines)
-                self.star_chart._aircraft = ac
-                self.star_chart.update()
-            else:
-                self._cached_ac = "✈ 当前区域无航班数据"
-            self._last_ac_update = datetime.now().timestamp()
-        except Exception:
-            self._cached_ac = "✈ 获取失败（请尝试启用网络）"
-        self.ac_label.setText(self._cached_ac)
+            return ac
+
+        def _on_done(ac):
+            try:
+                if ac:
+                    visible = [a for a in ac if a.get("altitude", -90) > 0]
+                    lines = [f"✈ 追踪 {len(ac)} 架  |  可见 {len(visible)} 架"]
+                    for a in sorted(visible, key=lambda x: -x["altitude"])[:5]:
+                        lines.append(f"  {a['callsign']:>6s}  {a.get('altitude_ft', 0):.0f}ft  "
+                                     f"Alt {a['altitude']:.0f}°  {a.get('distance_km', 0):.0f}km")
+                    if len(visible) > 5:
+                        lines.append(f"  ...及 {len(visible)-5} 架更多")
+                    self._cached_ac = "\n".join(lines)
+                    self.star_chart._aircraft = ac
+                    self.star_chart.update()
+                else:
+                    self._cached_ac = "✈ 当前区域无航班数据"
+                self._last_ac_update = datetime.now().timestamp()
+            except Exception:
+                self._cached_ac = "✈ 获取失败（请尝试启用网络）"
+            self.ac_label.setText(self._cached_ac)
+
+        run_in_background(_do_fetch, on_finished=_on_done, on_error=lambda e: self.ac_label.setText("✈ 获取失败"))
 
     def _on_camera_changed(self, params):
         if hasattr(self.star_chart, 'set_camera_fov'):
@@ -461,6 +471,8 @@ class SkyView(QWidget):
             self._update_aircraft_info()
 
     def _update_satellite_info(self):
+        if not hasattr(self, 'sat_info'):
+            return
         now = datetime.now()
         if not hasattr(self, '_last_sat_update'):
             self._last_sat_update = 0
@@ -495,19 +507,36 @@ class SkyView(QWidget):
                             f"🛸 ISS 正在过境  Alt {alt_now:.0f}°  Az {az_now:.0f}°"
                         )
                     else:
-                        passes = sky.predict_satellite_passes(25544)
-                        if passes:
-                            p = passes[0]
-                            self._cached_iss_pass = (
-                                f"🛸 ISS下次过境: {p['start']} 升起 → {p['peak']} 最高 {p['max_alt']}° → {p['end']} 落下"
-                            )
-                        else:
-                            self._cached_iss_pass = "ISS 24h内无可见过境"
+                        self._fetch_iss_pass()
                 except Exception:
                     pass
 
-        self.sat_info.setText(self._cached_sat_lines)
-        self.sat_pass_info.setText(self._cached_iss_pass)
+    def _fetch_iss_pass(self):
+        from app.core.background_worker import run_in_background
+
+        def _compute():
+            return sky.predict_satellite_passes(25544)
+
+        def _on_done(passes):
+            try:
+                if passes:
+                    p = passes[0]
+                    self._cached_iss_pass = (
+                        f"🛸 ISS下次过境: {p['start']} 升起 → {p['peak']} 最高 {p['max_alt']}° → {p['end']} 落下"
+                    )
+                else:
+                    self._cached_iss_pass = "ISS 24h内无可见过境"
+                if hasattr(self, "sat_pass_info"):
+                    self.sat_pass_info.setText(self._cached_iss_pass)
+            except Exception:
+                pass
+
+        run_in_background(_compute, on_finished=_on_done, on_error=lambda e: None)
+
+        if hasattr(self, "sat_info"):
+            self.sat_info.setText(self._cached_sat_lines)
+        if hasattr(self, "sat_pass_info"):
+            self.sat_pass_info.setText(self._cached_iss_pass)
 
     def on_show(self):
         self.star_chart.refresh()
@@ -530,48 +559,65 @@ class SkyView(QWidget):
         self.star_chart.update()
 
     def _refresh_dso_list(self):
-        try:
-            from app.api.astronomy_api import filter_dso_for_night
-            mag_lim = self.dso_mag_spin.value()
-            alt_min = self.dso_alt_spin.value()
-            user_bortle = {"暗空区": 2, "乡村": 4, "郊区": 6, "城市": 8}.get(config.light_pollution, 8)
-            targets = filter_dso_for_night(mag_limit=mag_lim, min_alt=alt_min, user_bortle=user_bortle)
-            if not targets:
-                self.dso_list_label.setText(f"未找到满足条件的目标 (亮度≤{mag_lim}, 高度≥{alt_min}°)")
-                return
-            lines = [f"🎯 找到 {len(targets)} 个最佳目标 (亮度≤{mag_lim}, 高度≥{alt_min}°):"]
-            for t in targets[:20]:
-                vis_icon = "✅" if t["visible"] else "⚠️"
-                d = f"{t['dist_ly']/1000:.0f}k" if t["dist_ly"] > 10000 else f"{t['dist_ly']:.0f}"
-                lines.append(f"  {vis_icon} {t['id']:6s} {t['name']:8s} Mag{t['mag']:.1f} Alt{t['altitude']:.0f}° {d}ly {t['type']}")
-            if len(targets) > 20:
-                lines.append(f"  ...及 {len(targets)-20} 个更多目标")
-            self.dso_list_label.setText("\n".join(lines))
-        except Exception as e:
-            self.dso_list_label.setText(f"获取失败: {e}")
+        from app.core.background_worker import run_in_background
+        from app.api.astronomy_api import filter_dso_for_night
+        mag_lim = self.dso_mag_spin.value()
+        alt_min = self.dso_alt_spin.value()
+        user_bortle = {"暗空区": 2, "乡村": 4, "郊区": 6, "城市": 8}.get(config.light_pollution, 8)
+
+        def _compute():
+            return filter_dso_for_night(mag_limit=mag_lim, min_alt=alt_min, user_bortle=user_bortle)
+
+        def _on_done(targets):
+            try:
+                if not targets:
+                    self.dso_list_label.setText(f"未找到满足条件的目标 (亮度≤{mag_lim}, 高度≥{alt_min}°)")
+                    return
+                lines = [f"🎯 找到 {len(targets)} 个最佳目标 (亮度≤{mag_lim}, 高度≥{alt_min}°):"]
+                for t in targets[:20]:
+                    vis_icon = "✅" if t["visible"] else "⚠️"
+                    d = f"{t['dist_ly']/1000:.0f}k" if t["dist_ly"] > 10000 else f"{t['dist_ly']:.0f}"
+                    lines.append(f"  {vis_icon} {t['id']:6s} {t['name']:8s} Mag{t['mag']:.1f} Alt{t['altitude']:.0f}° {d}ly {t['type']}")
+                if len(targets) > 20:
+                    lines.append(f"  ...及 {len(targets)-20} 个更多目标")
+                self.dso_list_label.setText("\n".join(lines))
+            except Exception as e:
+                self.dso_list_label.setText(f"获取失败: {e}")
+
+        run_in_background(_compute, on_finished=_on_done, on_error=lambda e: None)
 
     def _update_aircraft_info(self):
+        if not hasattr(self, 'ac_label'):
+            return
         now = datetime.now()
         if not hasattr(self, '_last_ac_update'):
             self._last_ac_update = 0
             self._cached_ac = "✈ 加载中..."
         if (now.timestamp() - self._last_ac_update) > 120:
             self._last_ac_update = now.timestamp()
-            try:
-                ac = fetch_aircraft()
-                if ac:
-                    visible = [a for a in ac if a.get("altitude", -90) > 0]
-                    lines = [f"✈ 追踪 {len(ac)} 架  |  可见 {len(visible)} 架"]
-                    for a in sorted(visible, key=lambda x: -x["altitude"])[:5]:
-                        lines.append(f"  {a['callsign']:>6s}  {a['altitude_ft']:.0f}ft  "
-                                     f"Alt {a['altitude']:.0f}°  {a['distance_km']:.0f}km")
-                    if len(visible) > 5:
-                        lines.append(f"  ...及 {len(visible)-5} 架更多")
-                    self._cached_ac = "\n".join(lines)
-                else:
-                    self._cached_ac = "✈ 当前区域无航班数据"
-            except Exception:
-                self._cached_ac = "✈ 获取失败（请尝试启用网络）"
+            from app.core.background_worker import run_in_background
+
+            def _fetch():
+                return fetch_aircraft()
+
+            def _on_done(ac):
+                try:
+                    if ac:
+                        visible = [a for a in ac if a.get("altitude", -90) > 0]
+                        lines = [f"✈ 追踪 {len(ac)} 架  |  可见 {len(visible)} 架"]
+                        for a in sorted(visible, key=lambda x: -x["altitude"])[:5]:
+                            lines.append(f"  {a['callsign']:>6s}  {a.get('altitude_ft', 0):.0f}ft  "
+                                         f"Alt {a['altitude']:.0f}°  {a.get('distance_km', 0):.0f}km")
+                        if len(visible) > 5:
+                            lines.append(f"  ...及 {len(visible)-5} 架更多")
+                        self._cached_ac = "\n".join(lines)
+                    else:
+                        self._cached_ac = "✈ 当前区域无航班数据"
+                except Exception:
+                    self._cached_ac = "✈ 获取失败（请尝试启用网络）"
+                self.ac_label.setText(self._cached_ac)
+
+            run_in_background(_fetch, on_finished=_on_done, on_error=lambda e: self.ac_label.setText(self._cached_ac))
         self.ac_label.setText(self._cached_ac)
 
     def _export_log(self):

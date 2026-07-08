@@ -7,6 +7,14 @@ from typing import Optional
 
 from app.config import config
 
+try:
+    from skyfield.api import (load as _sf_load, wgs84 as _sf_wgs84,
+                               Star as _sf_Star, EarthSatellite as _sf_EarthSatellite)
+    _SF_AVAILABLE = True
+except ImportError:
+    _sf_load = _sf_wgs84 = _sf_Star = _sf_EarthSatellite = None
+    _SF_AVAILABLE = False
+
 BRIGHT_STARS = [
     ("天狼星", 101.287, -16.716, -1.46, "#A8C8FF"),
     ("老人星", 95.988, -52.696, -0.72, "#FFD700"),
@@ -31,12 +39,12 @@ BRIGHT_STARS = [
     ("尾宿八", 264.330, -42.998, 1.50, "#FF6B6B"),
     ("候", 319.645, 62.585, 2.05, "#FFB347"),
     ("北斗一", 165.932, 61.751, 1.76, "#FFD700"),
-    ("北斗二", 153.685, 49.314, 2.37, "#FFD700"),
-    ("北斗三", 148.888, 69.065, 2.45, "#FFD700"),
-    ("北斗四", 172.914, 74.656, 3.32, "#FFD700"),
-    ("北斗五", 200.981, 54.925, 1.79, "#FFB347"),
-    ("北斗六", 178.458, 53.694, 2.27, "#FFB347"),
-    ("北斗七", 165.932, 61.751, 1.76, "#FFB347"),
+    ("北斗二", 165.458, 56.382, 2.37, "#FFD700"),
+    ("北斗三", 178.458, 53.695, 2.45, "#FFD700"),
+    ("北斗四", 183.857, 57.033, 3.32, "#FFD700"),
+    ("北斗五", 193.507, 55.960, 1.79, "#FFB347"),
+    ("北斗六", 200.981, 54.925, 2.27, "#FFB347"),
+    ("北斗七", 206.885, 49.314, 1.86, "#FFB347"),
     ("辇道增七", 304.268, 27.957, 3.05, "#FFD700"),
     ("渐台二", 283.816, 36.804, 3.52, "#A8C8FF"),
     ("天大将军", 46.535, 29.341, 4.20, "#FFD700"),
@@ -67,6 +75,7 @@ DEVICE_CONFIGS = [
 ]
 
 DATA_DIR = Path(__file__).parent.parent.parent / "data"
+ROOT_DIR = Path(__file__).parent.parent.parent
 DSO_CATALOG = []
 
 def _load_dso():
@@ -185,12 +194,13 @@ CONSTELLATION_LINES = {
         (83.822, -5.391, 85.190, -1.943),
     ],
     "大熊座": [
-        (165.932, 61.751, 153.685, 49.314),
-        (153.685, 49.314, 148.888, 69.065),
-        (148.888, 69.065, 172.914, 74.656),
-        (172.914, 74.656, 200.981, 54.925),
-        (200.981, 54.925, 178.458, 53.694),
-        (178.458, 53.694, 165.932, 61.751),
+        (165.932, 61.751, 165.458, 56.382),
+        (165.458, 56.382, 178.458, 53.695),
+        (178.458, 53.695, 183.857, 57.033),
+        (183.857, 57.033, 193.507, 55.960),
+        (193.507, 55.960, 200.981, 54.925),
+        (200.981, 54.925, 206.885, 49.314),
+        (206.885, 49.314, 165.932, 61.751),
     ],
     "天鹅座": [
         (310.358, 45.290, 313.192, 40.934),
@@ -264,17 +274,13 @@ class SkyCalculator:
         if self._tried_load:
             return False
         self._tried_load = True
-        try:
-            from skyfield.api import load, wgs84, Star, Distance
-        except ImportError:
+        if not _SF_AVAILABLE:
             return False
         try:
-            self._ts = load.timescale()
-            skyfield_dir = Path.home() / ".startrail" / "skyfield"
-            skyfield_dir.mkdir(parents=True, exist_ok=True)
-            bsp_path = skyfield_dir / "de421.bsp"
+            self._ts = _sf_load.timescale()
+            bsp_path = self._locate_eph_path()
             try:
-                self._eph = load(str(bsp_path))
+                self._eph = _sf_load(bsp_path)
             except Exception:
                 return False
             self._earth = self._eph["earth"]
@@ -294,6 +300,23 @@ class SkyCalculator:
         except Exception:
             return False
 
+    @staticmethod
+    def _locate_eph_path():
+        """Return a local de421.bsp path, copying a bundled copy if needed (offline-safe)."""
+        skyfield_dir = Path.home() / ".startrail" / "skyfield"
+        skyfield_dir.mkdir(parents=True, exist_ok=True)
+        bsp_path = skyfield_dir / "de421.bsp"
+        if not bsp_path.exists():
+            for cand in (ROOT_DIR / "de421.bsp", DATA_DIR / "de421.bsp"):
+                if cand.exists():
+                    try:
+                        import shutil
+                        shutil.copyfile(str(cand), str(bsp_path))
+                    except Exception:
+                        bsp_path = cand
+                    break
+        return str(bsp_path)
+
     def _utc_tuple(self, dt):
         """Convert naive local datetime to UTC (y,m,d,h,m,s) tuple."""
         if dt.tzinfo is not None:
@@ -310,7 +333,7 @@ class SkyCalculator:
         if self._ensure_loaded():
             utc_args = self._utc_tuple(dt)
             t = self._ts.utc(*utc_args)
-            obs = self._earth + wgs84.latlon(config.latitude, config.longitude)
+            obs = self._earth + _sf_wgs84.latlon(config.latitude, config.longitude)
             for idx, (name, color) in enumerate(PLANET_DATA):
                 key = list(self._planets.keys())[idx]
                 try:
@@ -363,7 +386,7 @@ class SkyCalculator:
         if self._ensure_loaded() and body_key in self._planets:
             try:
                 t = self._ts.utc(*self._utc_tuple(dt))
-                obs = self._earth + wgs84.latlon(config.latitude, config.longitude)
+                obs = self._earth + _sf_wgs84.latlon(config.latitude, config.longitude)
                 astro = obs.at(t).observe(self._planets[body_key])
                 app = astro.apparent()
                 alt, az, _ = app.altaz()
@@ -406,20 +429,26 @@ class SkyCalculator:
             return pos
         phase_data = self.get_moon_phase(dt)
         p = phase_data["phase"]
-        ra = p * 24 + 6
+        days_since_equinox = dt.timetuple().tm_yday - 81
+        sun_lon = days_since_equinox * 0.9856
+        moon_lon = (sun_lon + p * 360.0) % 360.0
+        eps_r = math.radians(23.44)
+        ra_moon_h = (math.degrees(math.atan2(
+            math.sin(math.radians(moon_lon)) * math.cos(eps_r),
+            math.cos(math.radians(moon_lon)))) % 360) / 15.0
         lst = self._approx_lst(dt)
-        ha = lst - ra
+        ha = lst - ra_moon_h
         ha = ha % 24
         if ha > 12:
             ha -= 24
         ha_deg = ha * 15
-        dec_moon = p * 50 - 25
+        dec_moon = 23.44 * math.sin(math.radians(moon_lon))
         lat_r = math.radians(config.latitude)
         dec_r = math.radians(dec_moon)
         ha_r = math.radians(ha_deg)
         alt = math.asin(math.sin(lat_r) * math.sin(dec_r) + math.cos(lat_r) * math.cos(dec_r) * math.cos(ha_r))
         az = math.atan2(-math.sin(ha_r), math.tan(dec_r) * math.cos(lat_r) - math.sin(lat_r) * math.cos(ha_r))
-        return {"altitude": math.degrees(alt), "azimuth": math.degrees(az), "ra": ra, "dec": dec_moon, "phase": phase_data}
+        return {"altitude": math.degrees(alt), "azimuth": math.degrees(az), "ra": ra_moon_h, "dec": dec_moon, "phase": phase_data}
 
     def get_upcoming_events(self, days=30):
         today = datetime.now()
@@ -441,10 +470,10 @@ class SkyCalculator:
         stars_to_show = [s for s in BRIGHT_STARS if s[3] <= mag_limit]
         if self._ensure_loaded():
             t = self._ts.utc(*self._utc_tuple(dt))
-            obs = self._earth + wgs84.latlon(config.latitude, config.longitude)
+            obs = self._earth + _sf_wgs84.latlon(config.latitude, config.longitude)
             for name, ra, dec, mag, color in stars_to_show:
                 try:
-                    star = Star(ra_hours=ra / 15.0, dec_degrees=dec)
+                    star = _sf_Star(ra_hours=ra / 15.0, dec_degrees=dec)
                     astro = obs.at(t).observe(star)
                     app = astro.apparent()
                     alt, az, _ = app.altaz()
@@ -514,7 +543,7 @@ class SkyCalculator:
         if self._ensure_loaded():
             try:
                 from skyfield import almanac
-                location = wgs84.latlon(lat, lon)
+                location = _sf_wgs84.latlon(lat, lon)
                 u = self._utc_tuple(dt)
                 t0 = self._ts.utc(u[0], u[1], u[2])
                 t1 = self._ts.utc(u[0], u[1], u[2] + 1)
@@ -564,7 +593,7 @@ class SkyCalculator:
         if self._ensure_loaded():
             try:
                 from skyfield import almanac
-                location = wgs84.latlon(lat, lon)
+                location = _sf_wgs84.latlon(lat, lon)
                 u = self._utc_tuple(dt)
                 t0 = self._ts.utc(u[0], u[1], u[2])
                 t1 = self._ts.utc(u[0], u[1], u[2] + 1)
@@ -784,11 +813,10 @@ class SkyCalculator:
             tle = tle_dict.get(norad_id)
             if tle:
                 try:
-                    from skyfield.api import EarthSatellite
                     name, line1, line2 = tle
-                    sat = EarthSatellite(line1, line2, name)
+                    sat = _sf_EarthSatellite(line1, line2, name)
                     t = self._ts.utc(*self._utc_tuple(dt))
-                    obs = self._earth + wgs84.latlon(config.latitude, config.longitude)
+                    obs = self._earth + _sf_wgs84.latlon(config.latitude, config.longitude)
                     diff = sat - obs
                     topo = diff.at(t)
                     alt, az, dist = topo.altaz()
@@ -846,10 +874,9 @@ class SkyCalculator:
             return []
 
         try:
-            from skyfield.api import EarthSatellite
             name, line1, line2 = tle
-            sat = EarthSatellite(line1, line2, name)
-            obs = self._earth + wgs84.latlon(config.latitude, config.longitude)
+            sat = _sf_EarthSatellite(line1, line2, name)
+            obs = self._earth + _sf_wgs84.latlon(config.latitude, config.longitude)
             passes = []
             u = self._utc_tuple(dt)
             dt_utc = datetime(u[0], u[1], u[2], u[3], u[4], int(u[5]), tzinfo=timezone.utc)
@@ -938,15 +965,15 @@ def compute_satellites_bg(data):
     tle_dict, lat, lon, dt_tuple = data
     results = []
     try:
-        from skyfield.api import load, wgs84, EarthSatellite
-        from skyfield.timelib import Timescale
-        ts = load.timescale()
-        bsp = str(Path.home() / ".startrail" / "skyfield" / "de421.bsp")
-        eph = load(bsp)
+        if not _SF_AVAILABLE:
+            return results
+        ts = _sf_load.timescale()
+        bsp_path = SkyCalculator._locate_eph_path()
+        eph = _sf_load(bsp_path)
         earth = eph["earth"]
         y, mo, d, h, mi, s = dt_tuple
         t = ts.utc(y, mo, d, h, mi, s)
-        obs = earth + wgs84.latlon(lat, lon)
+        obs = earth + _sf_wgs84.latlon(lat, lon)
         dt_utc = datetime(y, mo, d, h, mi, int(s), tzinfo=timezone.utc)
 
         for norad_id, sname, color, is_primary in _SATELLITE_CATALOG:
@@ -954,7 +981,7 @@ def compute_satellites_bg(data):
             if tle:
                 try:
                     name, line1, line2 = tle
-                    sat = EarthSatellite(line1, line2, name)
+                    sat = _sf_EarthSatellite(line1, line2, name)
                     diff = sat - obs
                     topo = diff.at(t)
                     alt, az, dist = topo.altaz()

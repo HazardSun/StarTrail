@@ -46,9 +46,19 @@ def run_in_background(target, on_finished=None, on_error=None, args=None, kwargs
             _SIGNAL_REFS.remove(signals)
 
     if on_finished:
-        signals.finished.connect(on_finished)
+        def _safe_finished(res):
+            try:
+                on_finished(res)
+            except Exception:
+                pass  # widget likely destroyed
+        signals.finished.connect(_safe_finished)
     if on_error:
-        signals.error.connect(on_error)
+        def _safe_error(err):
+            try:
+                on_error(err)
+            except Exception:
+                pass  # widget likely destroyed
+        signals.error.connect(_safe_error)
     signals.finished.connect(release)
     signals.error.connect(release)
 

@@ -502,25 +502,6 @@ class CalendarView(QWidget):
 
         lines = []
 
-        # ── 卫星当前位置 ──
-        try:
-            sats = sky.get_satellite_positions()
-            for sat_id, sat_name in [(25544, "ISS"), (48274, "天宫")]:
-                for s in sats:
-                    if s.get("norad") == sat_id:
-                        alt = s.get("altitude", -90)
-                        icon = "🛸" if sat_id == 25544 else "🇨🇳"
-                        if alt > 0:
-                            az = s.get("azimuth", 0)
-                            dirs = ["北", "东北", "东", "东南", "南", "西南", "西", "西北"]
-                            d = dirs[int((az + 22.5) / 45) % 8]
-                            lines.append(f"{icon} {sat_name} 可见  Alt {alt:.0f}°  {d}方")
-                        else:
-                            lines.append(f"{icon} {sat_name} 地平线下")
-                        break
-        except Exception:
-            pass
-
         # ── 可见行星（望远镜推荐） ──
         try:
             planets = sky.get_planet_positions()
@@ -552,30 +533,64 @@ class CalendarView(QWidget):
         except Exception:
             pass
 
-        # ── 推荐观星地 ──
-        try:
-            sites = get_nearby_sites()
-            if sites:
-                lines.append("📍 推荐观星地点:")
-                for name, dist, lp, icon in sites:
-                    lines.append(f"  {icon} {name}  {dist}km  {lp}")
-        except Exception:
-            pass
-
-        if lines:
-            for line in lines:
-                lbl = QLabel(line)
-                lbl.setFont(Theme.font(11))
-                lbl.setStyleSheet(f"color: {Theme.TEXT_SECONDARY};")
-                lbl.setWordWrap(True)
-                layout.addWidget(lbl)
-        else:
-            lbl = QLabel("今日无特别天象")
-            lbl.setFont(Theme.body())
-            lbl.setStyleSheet(f"color: {Theme.TEXT_MUTED};")
+        for line in lines:
+            lbl = QLabel(line)
+            lbl.setFont(Theme.font(11))
+            lbl.setStyleSheet(f"color: {Theme.TEXT_SECONDARY};")
+            lbl.setWordWrap(True)
             layout.addWidget(lbl)
 
-        return section
+        # ── 卫星当前位置 / 推荐观星地（联网 + 重计算，后台加载） ──
+        sat_lbl = QLabel("🛸 正在获取卫星与观星地信息...")
+        sat_lbl.setFont(Theme.font(11))
+        sat_lbl.setStyleSheet(f"color: {Theme.TEXT_MUTED};")
+        sat_lbl.setWordWrap(True)
+        layout.addWidget(sat_lbl)
+
+        def _fetch():
+            sat_lines = []
+            try:
+                sats = sky.get_satellite_positions()
+                for sat_id, sat_name in [(25544, "ISS"), (48274, "天宫")]:
+                    for s in sats:
+                        if s.get("norad") == sat_id:
+                            alt = s.get("altitude", -90)
+                            icon = "🛸" if sat_id == 25544 else "🇨🇳"
+                            if alt > 0:
+                                az = s.get("azimuth", 0)
+                                dirs = ["北", "东北", "东", "东南", "南", "西南", "西", "西北"]
+                                d = dirs[int((az + 22.5) / 45) % 8]
+                                sat_lines.append(f"{icon} {sat_name} 可见  Alt {alt:.0f}°  {d}方")
+                            else:
+                                sat_lines.append(f"{icon} {sat_name} 地平线下")
+                            break
+            except Exception:
+                pass
+            site_lines = []
+            try:
+                sites = get_nearby_sites()
+                if sites:
+                    site_lines.append("📍 推荐观星地点:")
+                    for sname, dist, lp, sicon in sites:
+                        site_lines.append(f"  {sicon} {sname}  {dist}km  {lp}")
+            except Exception:
+                pass
+            return sat_lines, site_lines
+
+        def _on_done(res):
+            try:
+                sat_lines, site_lines = res
+                if sat_lines or site_lines:
+                    sat_lbl.setText("\n".join(sat_lines + site_lines))
+                    sat_lbl.setStyleSheet(f"color: {Theme.TEXT_SECONDARY};")
+                else:
+                    sat_lbl.setText("今日无特别天象 / 卫星数据不可用")
+                    sat_lbl.setStyleSheet(f"color: {Theme.TEXT_MUTED};")
+            except Exception:
+                pass
+
+        from app.core.background_worker import run_in_background
+        run_in_background(_fetch, on_finished=_on_done, on_error=lambda e: None)
 
         return section
 
