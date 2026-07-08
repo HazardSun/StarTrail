@@ -221,7 +221,7 @@ class MainWindow(QWidget):
         self.sidebar_panel_layout.setSpacing(4)
         sidebar_layout.addWidget(self.sidebar_panel, 1)
 
-        version = QLabel("v1.0.0")
+        version = QLabel("v1.0.1")
         version.setFont(Theme.caption())
         version.setStyleSheet(f"color: {Theme.TEXT_MUTED}; padding: 8px;")
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)

@@ -14,7 +14,7 @@ from app.theme import Theme
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("星迹 StarTrail")
-    app.setApplicationVersion("1.0.0")
+    app.setApplicationVersion("1.0.1")
     app.setStyle("Fusion")
 
     Theme.apply_dark_palette(app)

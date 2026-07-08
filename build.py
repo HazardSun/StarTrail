@@ -116,7 +116,7 @@ if proc.returncode == 0 and exe_path.exists():
     print(f"  Final size: {total_mb:.0f} MB")
     print("=" * 50)
 
-    zip_name = "StarTrail_v1.0.0.zip"
+    zip_name = "StarTrail_v1.0.1.zip"
     zip_path = BASE / zip_name
     if zip_path.exists():
         zip_path.unlink()
