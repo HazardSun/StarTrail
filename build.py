@@ -36,13 +36,14 @@ EXCLUDE = [
     "sklearn", "pandas", "matplotlib", "PIL", "PIL.ImageFilter",
     "openpyxl", "cffi", "pycparser", "lxml", "fsspec", "pydantic",
     "rich", "pygments", "jinja2", "regex",
-    "win32com", "charset_normalizer",
+    "win32com",
 ]
 
 cmd = [str(PYTHON), "-m", "PyInstaller",
        "--windowed", "--onedir", "--noconfirm", "--clean",
        "--name", "StarTrail",
        "--add-data", f"data{os.pathsep}data",
+       "--add-data", f"de421.bsp{os.pathsep}.",
        "--collect-all", "PySide6",
        "--collect-all", "skyfield"]
 
@@ -116,7 +117,7 @@ if proc.returncode == 0 and exe_path.exists():
     print(f"  Final size: {total_mb:.0f} MB")
     print("=" * 50)
 
-    zip_name = "StarTrail_v1.0.1.zip"
+    zip_name = "StarTrail_v1.0.2.zip"
     zip_path = BASE / zip_name
     if zip_path.exists():
         zip_path.unlink()

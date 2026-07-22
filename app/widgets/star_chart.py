@@ -1,7 +1,6 @@
 import math
 import random
 import traceback
-from urllib.parse import quote
 from datetime import datetime
 
 STAR_DATA = {
@@ -70,6 +69,7 @@ def _make_glow(color, radius, alpha=40):
 
 
 HOVER_RADIUS = 12
+MAX_DSO_LABELS = 18          # 限制同时显示的 DSO 标签数量，避免标签泛滥遮盖星图
 
 
 class StarChart(QWidget):
@@ -387,38 +387,9 @@ class StarChart(QWidget):
             self._press_pos = None
 
     def _get_image_url(self, obj):
-        obj_type = obj.get("type", "")
-        if obj_type == "dso":
-            dso_id = obj.get("id", "")
-            if dso_id:
-                return f"https://aladin.cds.unistra.fr/AladinLite/?target={dso_id}&fov=0.5&survey=CDS%2FP%2FDSS2%2Fcolor"
-        elif obj_type == "star":
-            name = obj.get("name", "")
-            sd = STAR_DATA.get(name)
-            if sd and sd[3]:
-                return f"https://starfyi.com/zh-hans/star/{sd[3]}/"
-            if name:
-                return f"https://baike.baidu.com/item/{quote(name)}"
-        elif obj_type == "planet":
-            name = obj.get("name", "")
-            if name:
-                return f"https://baike.baidu.com/item/{quote(name)}"
-        elif obj_type == "sun":
-            return "https://soho.nascom.nasa.gov/data/realtime/hmi_igr/1024/latest.jpg"
-        elif obj_type == "moon":
-            return "https://lroc.sese.asu.edu/images/latest/thumbnail.jpg"
-        elif obj_type == "satellite":
-            norad = obj.get("norad", 0)
-            if norad:
-                return f"https://www.n2yo.com/satellite/?s={norad}"
-        elif obj_type == "aircraft":
-            reg = obj.get("registration", "")
-            if reg:
-                return f"https://www.jetphotos.com/registration/{reg}"
-            icao = obj.get("icao", "")
-            if icao:
-                return f"https://www.jetphotos.com/photo/keyword={icao}"
-        return None
+        # 集中到 app.api.info_links.get_info_url，保证链接稳定可访问
+        from app.api.info_links import get_info_url
+        return get_info_url(obj)
 
     def guide_goto(self, alt, az):
         """Rotate view to center on given altitude/azimuth."""
@@ -753,6 +724,8 @@ class StarChart(QWidget):
         for star in self._stars:
             alt = star["altitude"]
             az = star["azimuth"]
+            if alt < 0:  # 地平线以下不绘制（避免被钳到小环）
+                continue
             mag = star.get("mag", 0)
             name = star.get("name", "")
             color_str = star.get("color", "#FFFFFF")
@@ -1149,7 +1122,7 @@ class StarChart(QWidget):
             fm = QFontMetrics(painter.font())
             text = f"⚠️ {w['callsign']} 距目标 {w['separation']:.0f}°"
             tw = fm.horizontalAdvance(text) + 20
-            painter.setBrush(QBrush(QColor(Theme.DANGER, 200)))
+            painter.setBrush(QBrush(Theme.qcolor(Theme.DANGER, 200)))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawRoundedRect(self.width() - tw - 16, y, tw, 24, 6, 6)
             painter.setPen(QPen(Qt.GlobalColor.white))
@@ -1234,14 +1207,14 @@ class StarChart(QWidget):
                 if kw in t: return "galaxy"
             return "other"
 
+        # ── 第一遍：收集所有可见 DSO 并计算屏幕位置 ──
+        candidates = []
         for obj in self._dsos:
             if isinstance(obj, (list, tuple)):
                 continue
             obj_id = obj.get("id", "")
             name = obj.get("name", "")
             obj_type = obj.get("type", "")
-            ra = obj.get("ra", 0)
-            dec = obj.get("dec", 0)
             mag = obj.get("mag", 99)
 
             dcat = _dso_cat(obj_type)
@@ -1257,7 +1230,7 @@ class StarChart(QWidget):
 
             if vis and "transit_hour" in vis:
                 lst = sky.get_jd() % 1 * 24
-                az_sim = (lst - ra / 15) * 15 % 360
+                az_sim = (lst - obj.get("ra", 0) / 15) * 15 % 360
             else:
                 az_sim = hash(obj_id) % 360
 
@@ -1266,34 +1239,68 @@ class StarChart(QWidget):
                 continue
 
             alt_str = vis.get("altitude", "?") if vis else "?"
+            candidates.append({
+                "obj": obj, "obj_id": obj_id, "name": name, "obj_type": obj_type,
+                "mag": mag, "alt_dso": alt_dso, "alt_str": alt_str,
+                "p": p, "dcat": dcat, "vis": vis,
+            })
+
+        # ── 按高度排序（最高的优先显示标签） ──
+        candidates.sort(key=lambda c: c["alt_dso"], reverse=True)
+
+        # ── 限制带标签的 DSO 数量，其余只画小点 ──
+        labeled = candidates[:MAX_DSO_LABELS]
+        dot_only = candidates[MAX_DSO_LABELS:]
+
+        w, h = self.width(), self.height()
+
+        for item in labeled:
+            obj = item["obj"]
+            p = item["p"]
+            obj_id = item["obj_id"]
+            name = item["name"]
+            mag = item["mag"]
+            alt_str = item["alt_str"]
+
             self._hit_dsos.append({
                 "name": f"{obj_id} ({name})",
                 "type": "dso",
-                "obj_type": obj_type,
-                "altitude": alt_dso,
-                "azimuth": az_sim,
+                "obj_type": item["obj_type"],
+                "altitude": item["alt_dso"], "azimuth": 0,
                 "sx": p.x(), "sy": p.y(),
                 "desc": obj.get("desc", ""),
                 "altitude_str": alt_str,
-                "mag": mag,
-                "id": obj_id,
+                "mag": mag, "id": obj_id,
                 "size": obj.get("size", 0),
                 "dist_ly": obj.get("dist_ly", 0),
                 "bortle": obj.get("bortle", 9),
             })
 
-            painter.setPen(QPen(_c(Theme.DANGER, 180), 1.5))
+            painter.setPen(QPen(_c(Theme.DANGER, 180), 1.2))
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawEllipse(p, 6, 6)
+            painter.drawEllipse(p, 5, 5)
 
+            # 标签文字裁剪到控件边界内
+            label_x = int(p.x() + 8)
+            label_y = int(p.y() + 4)
             painter.setPen(_c(Theme.DANGER, 100))
             painter.setFont(Theme.caption())
             label = f"{obj_id} ({name})"
-            painter.drawText(int(p.x() + 8), int(p.y() + 4), label)
+            # 只在文字不会超出右边界时才绘制
+            fm = QFontMetrics(painter.font())
+            if label_x + fm.horizontalAdvance(label) < w - 10:
+                painter.drawText(label_x, label_y, label)
             if isinstance(alt_str, (int, float)):
-                painter.drawText(int(p.x() + 8), int(p.y() + 16), f"Mag {mag}  Alt {alt_str:.1f}°")
-            else:
-                painter.drawText(int(p.x() + 8), int(p.y() + 16), f"Mag {mag}")
+                sub = f"Mag {mag}  Alt {alt_str:.1f}°"
+                if label_x + fm.horizontalAdvance(sub) < w - 10:
+                    painter.drawText(label_x, label_y + 16, sub)
+
+        # ── 超出限额的 DSO 只画极淡小点（无标签） ──
+        for item in dot_only:
+            p = item["p"]
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(_c(Theme.DANGER, 25)))
+            painter.drawEllipse(p, 2, 2)
 
     # =========================================================================
     # 交互反馈

@@ -30,10 +30,23 @@ class Config:
         if CONFIG_FILE.exists():
             try:
                 data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    return
                 for k, v in data.items():
-                    if hasattr(self, k):
-                        setattr(self, k, v)
-            except (json.JSONDecodeError, KeyError):
+                    if not hasattr(self, k):
+                        continue
+                    # dict 字段（api_keys / pro_settings）做类型校验 + 合并默认值，
+                    # 防止损坏的配置把 dict 写成字符串/数字，导致后续 .get() 抛 AttributeError 崩溃
+                    if k in ("api_keys", "pro_settings"):
+                        if not isinstance(v, dict):
+                            continue
+                        getattr(self, k).update(v)
+                        continue
+                    if k == "mode":
+                        # 归一化模式枚举（兼容旧配置 "standard" 等非法值）
+                        v = "professional" if v == "professional" else "beginner"
+                    setattr(self, k, v)
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
                 pass
 
     def save(self):

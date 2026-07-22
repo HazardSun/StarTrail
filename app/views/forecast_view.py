@@ -7,6 +7,8 @@ from PySide6.QtCore import Qt, QTimer
 from app.theme import Theme
 from app.config import config
 from app.widgets.glass_card import GlassCard
+from app.widgets.ui_kit import MetricBar
+from app.widgets.gauge import StargazingIndexGauge
 from app.api.weather_api import (get_weather, get_forecast, calc_stargazing_index,
                                  check_precipitation, wind_direction)
 from app.api.astronomy_api import sky
@@ -86,18 +88,19 @@ class ForecastView(QWidget):
         card = GlassCard()
         card.set_title("🌟 观星适宜度")
 
-        self.score_label = QLabel("--")
-        self.score_label.setFont(Theme.font(48, bold=True))
-        self.score_label.setStyleSheet(f"color: {Theme.TEXT_MUTED};")
-        self.score_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # ── 圆形仪表盘居中（已包含分数 + 等级文字）──
+        gauge_row = QHBoxLayout()
+        gauge_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self.score_desc = QLabel("正在获取数据...")
-        self.score_desc.setFont(Theme.font(14))
-        self.score_desc.setStyleSheet(f"color: {Theme.TEXT_MUTED};")
-        self.score_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.gauge = StargazingIndexGauge(value=0, size=140, stroke_width=12)
+        gauge_row.addWidget(self.gauge)
 
-        card.content_layout().addWidget(self.score_label)
-        card.content_layout().addWidget(self.score_desc)
+        card.content_layout().addLayout(gauge_row)
+
+        # 底部进度条参考
+        self.score_bar = MetricBar(0, Theme.TEXT_MUTED, height=6)
+        self.score_bar.setFixedHeight(6)
+        card.content_layout().addWidget(self.score_bar)
         self.main_layout.addWidget(card)
 
     def _build_score_rules(self):
@@ -271,14 +274,8 @@ class ForecastView(QWidget):
             val.setFixedWidth(90)
             row.addWidget(val)
 
-            bar_bg = QFrame()
-            bar_bg.setFixedHeight(8)
-            bar_bg.setStyleSheet(f"background: {Theme.DIVIDER}; border-radius: 4px;")
-            bar_fill = QFrame(bar_bg)
-            bar_fill.setFixedHeight(8)
-            bar_fill.setStyleSheet(f"background: {Theme.ACCENT}; border-radius: 4px;")
-            bar_fill.setFixedWidth(0)
-            row.addWidget(bar_bg, 1)
+            bar = MetricBar(0, Theme.ACCENT, height=8)
+            row.addWidget(bar, 1)
 
             deduct = QLabel("-0")
             deduct.setFont(Theme.font(12, bold=True))
@@ -288,7 +285,7 @@ class ForecastView(QWidget):
             row.addWidget(deduct)
 
             self._breakdown_widgets[factor] = {
-                "val": val, "bar_bg": bar_bg, "bar_fill": bar_fill, "deduct": deduct
+                "val": val, "bar": bar, "deduct": deduct
             }
 
             card.content_layout().addLayout(row)
@@ -307,26 +304,24 @@ class ForecastView(QWidget):
                 pts = int(pts_str)
                 w["val"].setText(str(raw))
                 w["deduct"].setText(f"-{pts}")
-                bw = w["bar_bg"].width() or 120
-                max_bar = 40
                 if pts == 0:
                     w["deduct"].setStyleSheet(f"color: {Theme.SUCCESS}; font-size: 12px; font-weight: bold;")
-                    w["bar_fill"].setFixedWidth(0)
+                    w["bar"].setValue(0)
+                    w["bar"].setColor(Theme.SUCCESS)
                 elif pts <= 10:
                     w["deduct"].setStyleSheet(f"color: {Theme.WARNING}; font-size: 12px; font-weight: bold;")
-                    pct = max(4, int(pts / max_bar * bw))
-                    w["bar_fill"].setFixedWidth(pct)
-                    w["bar_fill"].setStyleSheet(f"background: {Theme.WARNING}; border-radius: 4px;")
+                    w["bar"].setValue(int(pts / 40.0 * 100))
+                    w["bar"].setColor(Theme.WARNING)
                 else:
                     w["deduct"].setStyleSheet(f"color: {Theme.DANGER}; font-size: 12px; font-weight: bold;")
-                    pct = max(4, int(pts / max_bar * bw))
-                    w["bar_fill"].setFixedWidth(pct)
-                    w["bar_fill"].setStyleSheet(f"background: {Theme.DANGER}; border-radius: 4px;")
+                    w["bar"].setValue(int(pts / 40.0 * 100))
+                    w["bar"].setColor(Theme.DANGER)
             else:
                 w["val"].setText("--")
                 w["deduct"].setText("-0")
                 w["deduct"].setStyleSheet(f"color: {Theme.SUCCESS}; font-size: 12px; font-weight: bold;")
-                w["bar_fill"].setFixedWidth(0)
+                w["bar"].setValue(0)
+                w["bar"].setColor(Theme.SUCCESS)
 
     def _build_conditions(self):
         card = GlassCard()
@@ -437,6 +432,7 @@ class ForecastView(QWidget):
         if self._weather_cache and (now - self._weather_cache_time) < 120:
             weather = self._weather_cache
             self._apply_weather(weather)
+            self._apply_forecast(getattr(self, "_forecast_cache", None))
             return
 
         from app.core.background_worker import run_in_background
@@ -450,6 +446,8 @@ class ForecastView(QWidget):
                 if isinstance(weather, dict) and "error" not in weather:
                     self._weather_cache = weather
                     self._weather_cache_time = datetime.now().timestamp()
+                if isinstance(forecast, dict) and "error" not in forecast:
+                    self._forecast_cache = forecast
                 self._apply_weather(weather)
                 self._apply_forecast(forecast)
             except Exception:
@@ -511,24 +509,29 @@ class ForecastView(QWidget):
             self.condition_labels["风速"].setText(f"{wind_speed} m/s{gust_str}")
 
             score, desc, color, bp = calc_stargazing_index(weather, moon_phase)
-            self.score_label.setText(f"{score}")
-            self.score_label.setStyleSheet(f"color: {color};")
-            self.score_desc.setText(desc)
-            self.score_desc.setStyleSheet(f"color: {color};")
+            self.gauge.setValue(score)
+            self.score_bar.setValue(score)
+            self.score_bar.setColor(color)
             self._update_breakdown(bp)
         else:
-            err = weather.get("error", "") if isinstance(weather, dict) else "no_key"
+            if weather is None:
+                err = "network"
+            elif isinstance(weather, dict):
+                err = weather.get("error", "")
+            else:
+                err = "no_key"
+            code = weather.get("code", "?") if isinstance(weather, dict) else "?"
             msgs = {
                 "no_key": "🔑 请在设置中填写 OpenWeather API 密钥",
                 "invalid_key": "❌ API 密钥无效，请在设置中检查并重新填写",
                 "timeout": "⏱ 连接超时\nOpenWeatherMap 在中国大陆可能需要科学上网",
-                "http_error": f"⚠️ 服务返回错误 (HTTP {weather.get('code', '?')})",
+                "http_error": f"⚠️ 服务返回错误 (HTTP {code})",
+                "network": "🌐 网络连接失败，请检查网络设置",
             }
             msg = msgs.get(err, "🌐 网络连接失败，请检查网络设置")
-            self.score_label.setText("--")
-            self.score_label.setStyleSheet(f"color: {Theme.TEXT_MUTED};")
-            self.score_desc.setText(msg)
-            self.score_desc.setStyleSheet(f"color: {Theme.TEXT_SECONDARY};")
+            self.gauge.setValue(0)
+            self.score_bar.setValue(0)
+            self.score_bar.setColor(Theme.TEXT_MUTED)
             self._update_breakdown([])
 
     def _apply_forecast(self, forecast):

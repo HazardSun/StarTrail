@@ -1,16 +1,20 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QFrame, QScrollArea, QPushButton, QComboBox,
                                QLineEdit, QCheckBox)
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 
 from app.theme import Theme
 from app.config import config
-from app.api.location_api import get_city_names, get_coords, auto_detect_location
+from app.api.location_api import (get_city_names, get_coords, auto_detect_location,
+                                   get_location_warning)
+from app.widgets.ui_kit import SegmentedControl
 from app.api.weather_api import test_key as test_weather_key
 from app.api.nasa_api import test_key as test_nasa_key
 
 
 class SettingsView(QWidget):
+    mode_changed = Signal(str)
+
     def __init__(self):
         super().__init__()
         self.setObjectName("view")
@@ -61,51 +65,21 @@ class SettingsView(QWidget):
 
     def _build_mode_card(self):
         card = self._make_card("🧑‍🚀 使用模式")
-        self.mode_cards = {}
 
         modes = [
             ("beginner", "🌟 新手模式", "简洁界面 · 一键观星\n自动获取今日最佳观星时间"),
             ("professional", "🔭 专业模式", "RA/Dec 网格 · DSO 列表\nISS 追踪 · 原始数据展示"),
         ]
+        self._mode_seg = SegmentedControl(modes)
+        self._mode_seg.set_current(config.mode)
+        self._mode_seg.currentChanged.connect(self._on_mode_selected)
+        card.content_layout().addWidget(self._mode_seg)
 
-        row = QHBoxLayout()
-        row.setSpacing(12)
-
-        for key, title, desc in modes:
-            frame = QFrame()
-            is_active = config.mode == key
-            frame.setObjectName("card")
-            frame.setStyleSheet(f"""
-                QFrame#card {{
-                    background: {Theme.BG_SECONDARY};
-                    border-radius: 10px;
-                    border: 2px solid {Theme.ACCENT if is_active else Theme.DIVIDER};
-                }}
-            """)
-            fl = QVBoxLayout(frame)
-            fl.setContentsMargins(16, 12, 16, 12)
-            fl.setSpacing(6)
-
-            tl = QLabel(title)
-            tl.setFont(Theme.h3() if is_active else Theme.body())
-            tl.setStyleSheet(f"color: {Theme.TEXT_PRIMARY};")
-            fl.addWidget(tl)
-
-            dl = QLabel(desc)
-            dl.setFont(Theme.caption())
-            dl.setStyleSheet(f"color: {Theme.TEXT_SECONDARY};")
-            dl.setWordWrap(True)
-            fl.addWidget(dl)
-
-            row.addWidget(frame)
-            self.mode_cards[key] = frame
-
-        card.content_layout().addLayout(row)
-
-        self.mode_hint = QLabel(f"当前: {config.mode}")
+        self.mode_hint = QLabel()
         self.mode_hint.setFont(Theme.caption())
         self.mode_hint.setStyleSheet(f"color: {Theme.ACCENT};")
         card.content_layout().addWidget(self.mode_hint)
+        self._update_mode_hint(config.mode)
 
         self.main_layout.addWidget(card)
 
@@ -189,7 +163,7 @@ class SettingsView(QWidget):
     def _auto_locate(self, btn):
         btn.setEnabled(False)
         btn.setText("定位中...")
-        self.locate_status.setText("正在通过 IP 获取位置...")
+        self.locate_status.setText("正在通过 IP 获取位置（VPN 下可能不准确）...")
         self.locate_status.setStyleSheet(f"color: {Theme.TEXT_MUTED};")
 
         QTimer.singleShot(50, lambda: self._do_auto_locate(btn))
@@ -203,19 +177,30 @@ class SettingsView(QWidget):
         def _on_done(result):
             try:
                 city, lat, lon = result
+                warning = get_location_warning()
                 if city:
                     idx = self.city_combo.findText(city)
                     if idx >= 0:
                         self.city_combo.setCurrentIndex(idx)
                     else:
+                        # 城市不在内置列表中：以文本回显，避免静默丢弃定位结果
                         self.city_combo.setCurrentText(city)
                     config.city_name = city
-                config.latitude = lat
-                config.longitude = lon
-                config.save()
-                self.city_combo.setCurrentText(config.city_name)
-                self.locate_status.setText(f"已定位到: {config.city_name}")
-                self.locate_status.setStyleSheet(f"color: {Theme.SUCCESS};")
+                    config.latitude = lat
+                    config.longitude = lon
+                    config.save()
+                    self.city_combo.setCurrentText(config.city_name)
+                    self.coord_label.setText(f"纬度: {lat}°N  |  经度: {lon}°E")
+                    if warning:
+                        self.locate_status.setText(warning)
+                        self.locate_status.setStyleSheet(f"color: {Theme.WARNING};")
+                    else:
+                        self.locate_status.setText(f"已定位到: {config.city_name}")
+                        self.locate_status.setStyleSheet(f"color: {Theme.SUCCESS};")
+                else:
+                    # city 为 None：检测到 VPN/代理，已保留手动位置，仅提示
+                    self.locate_status.setText(warning or "已保留手动设置的位置")
+                    self.locate_status.setStyleSheet(f"color: {Theme.WARNING};")
                 btn.setEnabled(True)
                 btn.setText("🌐 自动定位")
             except Exception as ex:
@@ -404,7 +389,7 @@ class SettingsView(QWidget):
         card = self._make_card("ℹ️ 关于星迹")
 
         about = (
-            "星迹 StarTrail v1.0.0\n\n"
+            "星迹 StarTrail v1.0.2\n\n"
             "基于 Skyfield 天文计算引擎的桌面观星工具\n"
             "调用开放 API 获取实时天文与天气数据\n\n"
             "核心技术:\n"
@@ -470,14 +455,19 @@ class SettingsView(QWidget):
         self.pro_card.setVisible(mode == "professional")
         self._update_mode_display(mode)
 
+    def _on_mode_selected(self, mode):
+        if mode == config.mode:
+            return
+        config.mode = mode
+        config.save()
+        self._update_mode_hint(mode)
+        self.mode_changed.emit(mode)
+
     def _update_mode_display(self, mode):
-        for key, frame in self.mode_cards.items():
-            is_active = key == mode
-            frame.setStyleSheet(f"""
-                QFrame#card {{
-                    background: {Theme.BG_SECONDARY};
-                    border-radius: 10px;
-                    border: 2px solid {Theme.ACCENT if is_active else Theme.DIVIDER};
-                }}
-            """)
-        self.mode_hint.setText(f"当前: {'🔭 专业模式' if mode == 'professional' else '🌟 新手模式'}")
+        self._mode_seg.set_current(mode)
+        self._update_mode_hint(mode)
+
+    def _update_mode_hint(self, mode):
+        self.mode_hint.setText(
+            f"当前: {'🔭 专业模式' if mode == 'professional' else '🌟 新手模式'}"
+        )

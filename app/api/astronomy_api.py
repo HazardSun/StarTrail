@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.config import config
+from app.api.client import get_session
 
 try:
     from skyfield.api import (load as _sf_load, wgs84 as _sf_wgs84,
@@ -96,14 +97,15 @@ def dso_magnitude(obj):
 def dso_bortle_visible(obj, user_bortle):
     req = obj.get("bortle", 9)
     if user_bortle <= req:
-        return "✅ 可见", Theme.SUCCESS
+        return "✅ 可见", "#4CAF50"
     elif user_bortle <= req + 2:
-        return "⚠️ 勉强", Theme.WARNING
+        return "⚠️ 勉强", "#FFA726"
     else:
-        return "❌ 不可见", Theme.DANGER
+        return "❌ 不可见", "#EF5350"
 
 def dso_aladin_url(obj_id):
-    return f"https://aladin.cds.unistra.fr/AladinLite/?target={obj_id}&fov=0.5& Survey=CDS%2FP%2FDSS2%2Fcolor"
+    from app.api.info_links import dso_aladin_url as _aladin
+    return _aladin(obj_id)
 
 def get_dso_detail(obj):
     return {
@@ -317,13 +319,21 @@ class SkyCalculator:
                     break
         return str(bsp_path)
 
-    def _utc_tuple(self, dt):
-        """Convert naive local datetime to UTC (y,m,d,h,m,s) tuple."""
+    def _to_utc(self, dt):
+        """Convert a datetime (naive local OR timezone-aware) to an aware UTC datetime.
+
+        A naive ``datetime`` is interpreted by ``datetime.timestamp()`` as being in
+        the *system local* timezone, which already yields the correct POSIX instant.
+        Do NOT add the UTC offset a second time, or every skyfield position ends up
+        shifted by the local offset (e.g. +8h in China) — a silent, global error.
+        """
         if dt.tzinfo is not None:
-            utc = dt.astimezone(timezone.utc)
-        else:
-            off = -time.timezone
-            utc = datetime.fromtimestamp(dt.timestamp() + off, tz=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        return datetime.fromtimestamp(dt.timestamp(), tz=timezone.utc)
+
+    def _utc_tuple(self, dt):
+        """Convert datetime to a UTC (y,m,d,h,m,s) tuple for skyfield."""
+        utc = self._to_utc(dt)
         return utc.year, utc.month, utc.day, utc.hour, utc.minute, utc.second + utc.microsecond / 1e6
 
     def get_planet_positions(self, dt: Optional[datetime] = None):
@@ -373,7 +383,7 @@ class SkyCalculator:
         if dt is None:
             dt = datetime.now()
         known_new = datetime(2000, 1, 6)
-        diff = (dt - known_new).days + (dt.hour / 24)
+        diff = (dt - known_new).total_seconds() / 86400.0
         lunation = diff / 29.53058867
         phase = lunation % 1.0
         for p, icon, name in MOON_PHASES:
@@ -520,6 +530,19 @@ class SkyCalculator:
         lst = gst + config.longitude
         return (lst / 15) % 24
 
+    def _local_day_window(self, dt):
+        """Return skyfield times spanning the *local* calendar day [00:00, 24:00).
+
+        Using the UTC date components of ``dt`` is wrong near local midnight
+        (the UTC date can differ by a day, dropping the day's sunrise/sunset
+        from the search window). Convert the local midnight to UTC instead.
+        """
+        local_midnight = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_utc = self._to_utc(local_midnight)
+        t0 = self._ts.from_datetime(start_utc)
+        t1 = self._ts.from_datetime(start_utc + timedelta(days=1))
+        return t0, t1
+
     @staticmethod
     def _julian_day(dt):
         if dt.tzinfo is not None:
@@ -544,14 +567,13 @@ class SkyCalculator:
             try:
                 from skyfield import almanac
                 location = _sf_wgs84.latlon(lat, lon)
-                u = self._utc_tuple(dt)
-                t0 = self._ts.utc(u[0], u[1], u[2])
-                t1 = self._ts.utc(u[0], u[1], u[2] + 1)
+                t0, t1 = self._local_day_window(dt)
                 f = almanac.sunrise_sunset(self._eph, location)
                 times, events = almanac.find_discrete(t0, t1, f)
                 sunrise = sunset = None
                 for t, e in zip(times, events):
-                    h = t.utc_datetime().hour + t.utc_datetime().minute / 60
+                    dt_local = t.astimezone()
+                    h = dt_local.hour + dt_local.minute / 60
                     if e == 1:
                         sunrise = h
                     else:
@@ -594,14 +616,13 @@ class SkyCalculator:
             try:
                 from skyfield import almanac
                 location = _sf_wgs84.latlon(lat, lon)
-                u = self._utc_tuple(dt)
-                t0 = self._ts.utc(u[0], u[1], u[2])
-                t1 = self._ts.utc(u[0], u[1], u[2] + 1)
+                t0, t1 = self._local_day_window(dt)
                 f = almanac.risings_and_settings(self._eph, self._planets["moon"], location)
                 times, events = almanac.find_discrete(t0, t1, f)
                 moonrise = moonset = None
                 for t, e in zip(times, events):
-                    h = t.utc_datetime().hour + t.utc_datetime().minute / 60
+                    dt_local = t.astimezone()
+                    h = dt_local.hour + dt_local.minute / 60
                     if e == 1:
                         moonrise = h
                     else:
@@ -665,12 +686,13 @@ class SkyCalculator:
         ms_h, _ = map(int, moonset_str.split(":"))
 
         mp = moon_phase.get("phase", 0)
-        moon_bright = abs(mp - 0.5) * 2
+        # moon_darkness: 0=满月(最亮) 1=新月(最暗)。满月月光强，需收敛观星窗口。
+        moon_darkness = abs(mp - 0.5) * 2
 
         window_start = astro_dark
         window_end = 24
 
-        if moon_bright > 0.3:
+        if moon_darkness < 0.7:
             if ms_h > sr_h and ms_h < 24:
                 window_end = ms_h
             elif mr_h < sr_h:
@@ -699,7 +721,7 @@ class SkyCalculator:
             "end": end_str,
             "duration_hours": round(duration, 1),
             "quality": quality,
-            "moon_factor": round(moon_bright, 2),
+            "moon_factor": round(moon_darkness, 2),
         }
 
     def get_dso_visibility(self, dt: Optional[datetime] = None):
@@ -778,8 +800,7 @@ class SkyCalculator:
         ids = ",".join(str(s[0]) for s in self.SATELLITE_CATALOG)
         url = f"https://celestrak.org/NORAD/elements/gp.php?CATNR={ids}&FORMAT=TLE"
         try:
-            import requests
-            resp = requests.get(url, timeout=10)
+            resp = get_session().get(url, timeout=10)
             if resp.status_code == 200:
                 lines = resp.text.strip().splitlines()
                 tle_dict = {}
@@ -938,11 +959,16 @@ class SkyCalculator:
             return ["仙后座", "宝瓶座", "双鱼座", "白羊座"]
 
     def get_satellite_positions_bg(self, dt=None):
-        """Return (tle_dict, lat, lon, dt_tuple) for background computation."""
+        """Return (tle_dict, lat, lon, dt_tuple) for background computation.
+
+        ``dt_tuple`` is a UTC (y,m,d,h,m,s) tuple so the background worker builds
+        the correct skyfield time — using local wall-clock components here would
+        shift every satellite position by the local UTC offset.
+        """
         if dt is None:
             dt = datetime.now()
         return (self._fetch_tle(), config.latitude, config.longitude,
-                (dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second))
+                self._utc_tuple(dt))
 
 
 _SATELLITE_CATALOG = [
@@ -1053,7 +1079,7 @@ def get_tonight_guide(dt=None):
                 "name": f"🪐 {name}", "type": "planet", "priority": 1,
                 "altitude": p["altitude"], "azimuth": p["azimuth"],
                 "brightness": -p.get("magnitude", 5),
-                "description": f"今晚{name}在{'东南西北'[int(p['azimuth']/90)%4]}方天空{col}，它是{myth}。",
+                "description": f"今晚{name}在{'北东南西'[int(p['azimuth']/90)%4]}方天空{col}，它是{myth}。",
                 "detail": f"星等 {p.get('magnitude', 0):.1f}，适合小型望远镜观测。"
             })
 
@@ -1084,11 +1110,31 @@ def get_tonight_guide(dt=None):
     top3 = candidates[:3]
 
     score = 50
+    conditions = {}
     try:
         from app.api.weather_api import get_weather, calc_stargazing_index
         weather = get_weather(timeout=5)
         if isinstance(weather, dict) and "error" not in weather:
             score, _, _, _ = calc_stargazing_index(weather, moon)
+            # ── 构造 conditions（云量/视宁度/透明度）供 GuidePanel 指标卡使用 ──
+            cloud_pct = weather.get("clouds", {}).get("all", None)
+            if cloud_pct is not None:
+                cd = "少云" if cloud_pct <= 20 else ("多云" if cloud_pct <= 60 else "阴天")
+                conditions["cloud"] = {"value": f"{cloud_pct}%", "detail": cd}
+            try:
+                from app.api.atmosphere_api import get_atmosphere_forecast
+                atmos = get_atmosphere_forecast()
+                cur = atmos.get("current") if isinstance(atmos, dict) else None
+                if cur:
+                    s = cur.get("seeing")
+                    if s is not None:
+                        conditions["seeing"] = {"value": f'{s}"', "detail": cur.get("rating_label", "")}
+                    e = cur.get("extinction")
+                    if e is not None:
+                        td = "极佳" if e < 0.3 else ("良好" if e < 0.5 else ("一般" if e < 0.8 else "较差"))
+                        conditions["transparency"] = {"value": f"{e:.1f}", "detail": td}
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -1118,6 +1164,8 @@ def get_tonight_guide(dt=None):
         "rating": stars_rating,
         "rating_text": score_text,
         "advice": score_advice,
+        "stargazing_index": score,
+        "conditions": conditions,
     }
 
 sky = SkyCalculator()

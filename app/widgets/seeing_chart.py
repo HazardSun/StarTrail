@@ -53,12 +53,12 @@ class SeeingChart(QWidget):
         chart_rect = QRectF(margin_l, margin_t, chart_w, chart_h)
 
         # fill background
-        painter.fillRect(chart_rect, QColor(Theme.BG_CARD))
+        painter.fillRect(chart_rect, Theme.qcolor(Theme.BG_CARD))
 
         # draw horizontal reference lines
         for val in [1.0, 2.0, 3.0]:
             py = margin_t + chart_h * (1 - (val - y_min) / y_range)
-            painter.setPen(QPen(QColor(Theme.DIVIDER), 0.5, Qt.PenStyle.DashLine))
+            painter.setPen(QPen(Theme.qcolor(Theme.DIVIDER), 0.5, Qt.PenStyle.DashLine))
             painter.drawLine(QPointF(margin_l, py), QPointF(w - margin_r, py))
 
         # fill gradient under curve
@@ -71,7 +71,7 @@ class SeeingChart(QWidget):
             path.closeSubpath()
             grad = painter.pen().color()  # placeholder
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QBrush(QColor(Theme.ACCENT_DIM)))
+            painter.setBrush(QBrush(Theme.qcolor(Theme.ACCENT_DIM)))
             painter.drawPath(path)
 
         # draw line
@@ -102,7 +102,7 @@ class SeeingChart(QWidget):
         painter.setFont(Theme.font(7))
         painter.drawText(QRectF(0, margin_t, margin_l - 2, chart_h),
                          Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
-                         "\"")
+                         "mag")
 
         # "better" / "worse" indicators
         painter.setPen(QPen(QColor(Theme.TEXT_MUTED)))

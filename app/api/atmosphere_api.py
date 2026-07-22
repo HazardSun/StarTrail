@@ -148,6 +148,7 @@ def get_atmosphere_forecast():
     else:
         result["error"] = weather.get("error", "unknown")
 
-    _FORECAST_CACHE = result
-    _FORECAST_CACHE_TIME = now.timestamp()
+    if "error" not in result:
+        _FORECAST_CACHE = result
+        _FORECAST_CACHE_TIME = now.timestamp()
     return result

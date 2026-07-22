@@ -1,3 +1,8 @@
+"""玻璃态卡片 — 深空紫蓝风格。
+
+半透明底色 + 微妙发光边框 + hover 高亮。
+"""
+
 from PySide6.QtWidgets import QFrame, QVBoxLayout, QHBoxLayout, QLabel
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QLinearGradient
@@ -10,11 +15,12 @@ class GlassCard(QFrame):
         super().__init__(parent)
         self._hovered = False
         self.setObjectName("glass")
+        r = Theme.CORNER_RADIUS_MD
         self.setStyleSheet(f"""
             QFrame#glass {{
-                background: rgba(21, 27, 53, 0.75);
-                border: 1px solid rgba(108, 140, 255, 0.12);
-                border-radius: {Theme.CORNER_RADIUS_MD}px;
+                background: {Theme.BG_CARD_GLASS};
+                border: 1px solid {Theme.GLASS_BORDER};
+                border-radius: {r}px;
             }}
         """)
 
@@ -39,25 +45,29 @@ class GlassCard(QFrame):
         rect = self.rect()
         radius = Theme.CORNER_RADIUS_MD
 
-        bg_color = QColor(21, 27, 53, 180)
+        # Background
+        bg_color = QColor(19, 27, 56, 170)
         if self._hovered:
-            bg_color = QColor(26, 33, 64, 200)
+            bg_color = QColor(24, 33, 68, 195)
 
         painter.setBrush(QBrush(bg_color))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawRoundedRect(rect, radius, radius)
 
-        border_color = QColor(108, 140, 255, 30)
+        # Border glow
+        border_alpha = 35 if self._hovered else 20
+        border_color = QColor(107, 142, 255, border_alpha)
         border_pen = QPen(border_color, 1)
         painter.setPen(border_pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), radius, radius)
 
+        # Hover top highlight
         if self._hovered:
             highlight = QLinearGradient(0, 0, rect.width(), 0)
-            highlight.setColorAt(0, QColor(108, 140, 255, 0))
-            highlight.setColorAt(0.5, QColor(108, 140, 255, 20))
-            highlight.setColorAt(1, QColor(108, 140, 255, 0))
+            highlight.setColorAt(0, QColor(107, 142, 255, 0))
+            highlight.setColorAt(0.5, QColor(107, 142, 255, 18))
+            highlight.setColorAt(1, QColor(107, 142, 255, 0))
             painter.setBrush(QBrush(highlight))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawRoundedRect(rect, radius, radius)
@@ -73,7 +83,7 @@ class GlassCard(QFrame):
             self._title_label.deleteLater()
         self._title_label = QLabel(title)
         self._title_label.setFont(Theme.h3())
-        self._title_label.setStyleSheet(f"color: {Theme.TEXT_PRIMARY};")
+        self._title_label.setStyleSheet(f"color: {Theme.TEXT_PRIMARY}; background: transparent;")
         self._content_layout.insertWidget(0, self._title_label)
         return self._title_label
 
@@ -82,11 +92,11 @@ class GlassCard(QFrame):
         row.setSpacing(12)
         label = QLabel(label_text)
         label.setFont(Theme.caption())
-        label.setStyleSheet(f"color: {Theme.TEXT_MUTED};")
+        label.setStyleSheet(f"color: {Theme.TEXT_MUTED}; background: transparent;")
         label.setFixedWidth(80)
         row.addWidget(label)
         if isinstance(value_widget, QLabel):
-            value_widget.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-size: 12px;")
+            value_widget.setStyleSheet(f"color: {Theme.TEXT_SECONDARY}; font-size: 12px; background: transparent;")
         row.addWidget(value_widget, 1)
         self._content_layout.addLayout(row)
         return row

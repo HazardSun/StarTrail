@@ -49,7 +49,7 @@ class LoadingOverlay(QWidget):
         for i in range(12):
             a = self._angle + i * 30
             alpha = 40 + (i * 18) % 180
-            painter.setBrush(QBrush(QColor(Theme.ACCENT, alpha)))
+            painter.setBrush(QBrush(Theme.qcolor(Theme.ACCENT, alpha)))
             painter.drawEllipse(QRectF(
                 cx + r * 0.8 * math.cos(math.radians(a)) - 3,
                 cy + r * 0.8 * math.sin(math.radians(a)) - 3,
@@ -57,7 +57,7 @@ class LoadingOverlay(QWidget):
             ))
 
         painter.setFont(Theme.font(14, bold=True))
-        painter.setPen(QPen(QColor(Theme.TEXT_PRIMARY, 200)))
+        painter.setPen(QPen(Theme.qcolor(Theme.TEXT_PRIMARY, 200)))
         painter.drawText(QRectF(0, cy + 40, self.width(), 30),
                          Qt.AlignmentFlag.AlignCenter, self._text)
 

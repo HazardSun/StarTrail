@@ -1,10 +1,10 @@
 import math
 import threading
-import requests
 from datetime import datetime
 from typing import Optional
 
 from app.config import config
+from app.api.client import cached_get
 
 A = 6378137.0
 E2 = 0.00669437999
@@ -290,9 +290,8 @@ def fetch_aircraft(dt: Optional[datetime] = None):
     results = []
 
     try:
-        resp = requests.get(OPENSKY_URL, params=params, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
+        data = cached_get(OPENSKY_URL, params=params, timeout=10, ttl=30)
+        if isinstance(data, dict) and "error" not in data:
             states = data.get("states", [])
             ox, oy, oz = _geodetic_to_ecef(lat, lon, 0)
 
@@ -391,9 +390,8 @@ def fetch_aircraft_registrations(aircraft_list):
         try:
             batch = ",".join(icao.lower() for icao in icaos if icao)
             url = f"https://api.airplanes.live/v2/hex/{batch}"
-            resp = requests.get(url, timeout=10)
-            if resp.status_code == 200:
-                data = resp.json()
+            data = cached_get(url, timeout=10, ttl=86400)
+            if isinstance(data, dict) and "error" not in data:
                 with _CACHE_LOCK:
                     for entry in data.get("ac", []):
                         icao = entry.get("hex", "").lower()

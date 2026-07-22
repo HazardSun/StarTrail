@@ -1,7 +1,7 @@
 import math
-import requests
 
 from app.config import config
+from app.api.client import cached_get
 
 CITIES = [
     ("北京", 39.9042, 116.4074), ("上海", 31.2304, 121.4737),
@@ -27,31 +27,82 @@ CITIES = [
 ]
 
 _address_cache = None
+last_location_warning = ""
 
 
-def auto_detect_location():
-    global _address_cache
+# 内置城市列表全部为国内城市（含港澳台），用于判断“出口 IP 在境外”是否可疑
+_CN_CITIES = {c[0] for c in CITIES}
+
+
+def _is_domestic(cc: str) -> bool:
+    """CN/HK/MO/TW 均视为境内，避免把港澳台用户误判为 VPN。"""
+    return cc in ("CN", "HK", "MO", "TW")
+
+
+def _suspect_vpn(cc: str) -> bool:
+    """用户当前设置在国内城市，但网络出口 IP 在境外 → 极可能是 VPN/代理。
+
+    此时 IP 定位结果（境外节点）与用户真实位置不符，不应覆盖手动位置。
+    """
+    if _is_domestic(cc):
+        return False
+    return config.city_name in _CN_CITIES
+
+
+def get_location_warning() -> str:
+    """返回最近一次自动定位时的提示（如 VPN 告警），无则空字符串。"""
+    return last_location_warning
+
+
+def auto_detect_location(vpn_safe: bool = True):
+    """通过 ip-api 获取当前位置。
+
+    返回 ``(city, lat, lon)``。当检测到 VPN/代理导致出口 IP 在境外时，
+    为不破坏用户真实（手动设置的）位置，返回 ``(None, 当前lat, 当前lon)``
+    并在 :data:`last_location_warning` 中写入告警文案，由调用方决定是否更新。
+
+    全程使用 HTTPS，密钥无关，失败时优雅回退到已保存的配置。
+    """
+    global _address_cache, last_location_warning
+    last_location_warning = ""
     try:
-        resp = requests.get("http://ip-api.com/json/?lang=zh-CN", timeout=5)
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("status") == "success":
-                lat = data.get("lat", config.latitude)
-                lon = data.get("lon", config.longitude)
-                city = data.get("city", config.city_name)
+        data = cached_get(
+            "https://ip-api.com/json/",
+            params={
+                "lang": "zh-CN",
+                "fields": "status,message,country,countryCode,regionName,city,district,zip,isp,lat,lon",
+            },
+            timeout=5, ttl=0,
+        )
+        if isinstance(data, dict) and data.get("status") == "success":
+            lat = data.get("lat", config.latitude)
+            lon = data.get("lon", config.longitude)
+            city = data.get("city", config.city_name)
+            country = data.get("country", "")
+            cc = data.get("countryCode", "")
 
-                _address_cache = {
-                    "city": city,
-                    "region": data.get("regionName", ""),
-                    "district": data.get("district", ""),
-                    "zip": data.get("zip", ""),
-                    "isp": data.get("isp", ""),
-                    "lat": lat,
-                    "lon": lon,
-                }
+            _address_cache = {
+                "city": city,
+                "region": data.get("regionName", ""),
+                "district": data.get("district", ""),
+                "zip": data.get("zip", ""),
+                "isp": data.get("isp", ""),
+                "lat": lat,
+                "lon": lon,
+                "country": country,
+                "countryCode": cc,
+            }
 
-                matched_city = _find_nearest_city(lat, lon)
-                return matched_city or city, lat, lon
+            if vpn_safe and _suspect_vpn(cc):
+                # 出口 IP 在境外，IP 定位不可信 —— 保留用户手动设置的真实位置
+                last_location_warning = (
+                    f"检测到网络出口位于境外（{country or cc}），"
+                    f"可能是 VPN/代理，IP 定位不可信。已保留你手动设置的「{config.city_name}」"
+                )
+                return None, config.latitude, config.longitude
+
+            matched_city = _find_nearest_city(lat, lon)
+            return matched_city or city, lat, lon
     except Exception:
         pass
     return config.city_name, config.latitude, config.longitude
@@ -59,6 +110,9 @@ def auto_detect_location():
 
 def get_full_address():
     if _address_cache:
+        # VPN 场景下缓存的是境外地址，不应展示为“当前位置”
+        if last_location_warning and not _is_domestic(_address_cache.get("countryCode", "")):
+            return config.city_name
         parts = [p for p in [
             _address_cache.get("region"),
             _address_cache.get("city"),
@@ -67,19 +121,22 @@ def get_full_address():
         return " · ".join(parts) if parts else None
 
     try:
-        resp = requests.get(
-            "http://ip-api.com/json/?lang=zh-CN", timeout=5
+        data = cached_get(
+            "https://ip-api.com/json/",
+            params={"lang": "zh-CN", "fields": "status,countryCode,regionName,city,district"},
+            timeout=5, ttl=0,
         )
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("status") == "success":
-                parts = [p for p in [
-                    data.get("regionName", ""),
-                    data.get("city", ""),
-                    data.get("district", ""),
-                ] if p]
-                if parts:
-                    return " · ".join(parts)
+        if isinstance(data, dict) and data.get("status") == "success":
+            cc = data.get("countryCode", "")
+            if last_location_warning and not _is_domestic(cc):
+                return config.city_name
+            parts = [p for p in [
+                data.get("regionName", ""),
+                data.get("city", ""),
+                data.get("district", ""),
+            ] if p]
+            if parts:
+                return " · ".join(parts)
     except Exception:
         pass
     return None

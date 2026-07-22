@@ -65,10 +65,11 @@ class GLHybridChart(QOpenGLWidget):
         self._hit_stars = []; self._hit_planets = []; self._hit_suns = []
         self._hit_moons = []; self._hit_sats = []; self._hit_ac = []; self._hit_dsos_list = []
         self._time = 0.0
-        self._tick = QTimer(); self._tick.timeout.connect(self._on_tick); self._tick.start(33)
+        self._camera_fov = None
+        self._tick = QTimer(self); self._tick.timeout.connect(self._on_tick); self._tick.start(33)
         self._idle = True
-        self._refresh_timer = QTimer(); self._refresh_timer.timeout.connect(self.refresh); self._refresh_timer.start(600000)
-        self._net_timer = QTimer(); self._net_timer.timeout.connect(self._refresh_net); self._net_timer.start(600000)
+        self._refresh_timer = QTimer(self); self._refresh_timer.timeout.connect(self.refresh); self._refresh_timer.start(600000)
+        self._net_timer = QTimer(self); self._net_timer.timeout.connect(self._refresh_net); self._net_timer.start(600000)
         QTimer.singleShot(3000, self._refresh_net)
         self._gl_ok = False
         self._last_paint_ms = 0
@@ -78,7 +79,8 @@ class GLHybridChart(QOpenGLWidget):
         self._device_index = i; self._device_config = DEVICE_CONFIGS[i]; self.refresh()
 
     def set_camera_fov(self, params):
-        pass  # GLHybridChart doesn't use camera FOV overlay yet
+        self._camera_fov = params
+        self.update()
 
     def refresh(self):
         dt = datetime.now()
@@ -240,9 +242,11 @@ class GLHybridChart(QOpenGLWidget):
     # ═══ World → screen ═══
     def _w2s(self,alt,az,w,h):
         x,y,z=_altaz_to_xyz(max(0,alt),az)
-        v=self._view*QVector3D(x*5,y*5,z*5); p=self._proj*v
-        if p.z()<=0: return None
-        return QPointF((p.x()/p.z()+1)*.5*w,(1-p.y()/p.z())*.5*h)
+        # 用 map() 完成矩阵乘法 + 齐次除法（本 PySide6 不支持 mat*QVector3D）
+        v=self._proj.map(self._view.map(QVector3D(x*5,y*5,z*5)))
+        if v.z()<=-1 or v.z()>=1:  # 裁剪空间之外（含相机背后）
+            return None
+        return QPointF((v.x()+1)*.5*w,(1-v.y())*.5*h)
 
     def _hit_pt(self,alt,az,w,h):
         p=self._w2s(alt,az,w,h)
@@ -257,8 +261,8 @@ class GLHybridChart(QOpenGLWidget):
         try:
             self._ov_grid(p,w,h); self._ov_planets(p,w,h); self._ov_sun_moon(p,w,h)
             self._ov_sats(p,w,h); self._ov_ac(p,w,h); self._ov_dso(p,w,h)
-            self._ov_hover(p); self._ov_info(p,w,h); self._ov_status(p,w,h)
-        except: traceback.print_exc()
+            self._ov_hover(p); self._ov_info(p,w,h); self._ov_camera_fov(p,w,h); self._ov_status(p,w,h)
+        except Exception: traceback.print_exc()
         p.end()
 
     def _ov_grid(self,p,w,h):
@@ -364,7 +368,7 @@ class GLHybridChart(QOpenGLWidget):
         lines.append(f"Alt {obj.get('altitude',0):.1f}°  Az {obj.get('azimuth',0):.1f}°")
         p.setFont(Theme.caption()); fm=QFontMetrics(p.font())
         lh=fm.height()+2; bw=max(fm.horizontalAdvance(l) for l in lines)+20; bh=len(lines)*lh+12
-        bx=min(20, w-bw-10); by=20
+        bx=max(8, min(20, w-bw-10)); by=20
         p.setBrush(QBrush(QColor(11,14,26,220))); p.setPen(QPen(_c(Theme.DIVIDER,100),1))
         p.drawRoundedRect(QRectF(bx,by,bw,bh),6,6)
         p.setPen(_c(Theme.TEXT_PRIMARY,200))
@@ -374,6 +378,18 @@ class GLHybridChart(QOpenGLWidget):
         dc=self._device_config; now=datetime.now()
         txt=f"{dc['icon']}{dc['name']} | {config.city_name} {now.strftime('%H:%M:%S')} | {self._view_scale:.1f}x"
         p.setPen(QPen(_c(Theme.TEXT_MUTED,60),1)); p.setFont(Theme.caption()); p.drawText(16,h-12,txt)
+
+    def _ov_camera_fov(self,p,w,h):
+        fov=getattr(self,"_camera_fov",None)
+        if not fov: return
+        cx,cy=w/2,h/2
+        R=min(w,h)*0.42*self._view_scale      # 近似：天顶(90°)→半径 R
+        scale=R/90.0
+        fw=fov.get("fov_h_deg",0)*scale; fh=fov.get("fov_v_deg",0)*scale
+        if fw<=0 or fh<=0: return
+        rect=QRectF(cx-fw/2,cy-fh/2,fw,fh)
+        p.setPen(QPen(_c(Theme.ACCENT,200),1.5,Qt.PenStyle.DashLine))
+        p.setBrush(QBrush(_c(Theme.ACCENT,24))); p.drawRect(rect)
 
     # ═══ Events ═══
     def wheelEvent(self,e):
@@ -409,13 +425,10 @@ class GLHybridChart(QOpenGLWidget):
         pos=e.position(); hit=self._hit_test(pos)
         if hit:
             import webbrowser
-            t=hit.get("type",""); name=hit.get("name","")
-            if t=="star":
-                from app.widgets.star_chart import STAR_DATA
-                sd=STAR_DATA.get(name)
-                webbrowser.open(f"https://starfyi.com/zh-hans/star/{sd[3]}/" if sd and sd[3] else f"https://baike.baidu.com/item/{name}")
-            elif t=="planet": webbrowser.open(f"https://starfyi.com/zh-hans/star/{name}/")
-            elif t=="dso": webbrowser.open(f"https://aladin.cds.unistra.fr/AladinLite/?target={hit.get('id','')}&fov=0.5")
+            from app.api.info_links import get_info_url
+            url = get_info_url(hit)
+            if url:
+                webbrowser.open(url)
         self._view_scale=1; self._rot_x=self._rot_z=0; self.refresh()
 
     def _hit_test(self,pos):

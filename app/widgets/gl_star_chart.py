@@ -284,13 +284,15 @@ class GLStarChart(QOpenGLWidget):
         interleaved[6::8] = colors[2::3]
         interleaved[7::8] = phases
 
-        vao = QOpenGLVertexArrayObject()
-        vao.create()
-        vao.bind()
-        vbo = QOpenGLBuffer()
-        vbo.create()
-        vbo.bind()
-        vbo.allocate(interleaved.tobytes(), interleaved.nbytes)
+        # 复用同一对 VAO/VBO，避免每帧创建新的 GL 对象导致缓冲 churn / 对象名耗尽
+        if not hasattr(self, "_st_vao") or self._st_vao is None:
+            self._st_vao = QOpenGLVertexArrayObject()
+            self._st_vao.create()
+            self._st_vbo = QOpenGLBuffer()
+            self._st_vbo.create()
+        self._st_vao.bind()
+        self._st_vbo.bind()
+        self._st_vbo.allocate(interleaved.tobytes(), interleaved.nbytes)
 
         stride = 8 * 4
         GL.glVertexAttribPointer(0, 3, GL.GL_FLOAT, GL.GL_FALSE, stride, None)
@@ -304,8 +306,8 @@ class GLStarChart(QOpenGLWidget):
 
         GL.glDrawArrays(GL.GL_POINTS, 0, n)
 
-        vao.release()
-        vbo.release()
+        self._st_vao.release()
+        self._st_vbo.release()
         self._program.release()
 
     def _render_bloom(self, w, h):

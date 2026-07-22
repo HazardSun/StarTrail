@@ -15,6 +15,7 @@ from app.widgets.collapsible_card import CollapsibleCard
 from app.widgets.guide_card import GuidePanel
 from app.api.astronomy_api import sky, DEVICE_CONFIGS, get_tonight_guide
 from app.widgets.seeing_chart import SeeingChart
+from app.widgets.ui_kit import StatusPill
 
 
 class DeviceButton(QPushButton):
@@ -95,19 +96,10 @@ class SkyView(QWidget):
         top_row.addWidget(self.subtitle)
         top_row.addStretch()
 
-        self.pro_badge = QFrame()
-        pb_layout = QHBoxLayout(self.pro_badge)
-        pb_layout.setContentsMargins(8, 4, 8, 4)
-        self.pro_badge.setStyleSheet(f"""
-            background: {Theme.ACCENT_DIM};
-            border: 1px solid {Theme.ACCENT};
-            border-radius: 4px;
-        """)
+        self.pro_badge = StatusPill(
+            "🔬 专业模式 · 双击刷新 · RA/Dec 网格 · DSO", Theme.ACCENT
+        )
         self.pro_badge.setVisible(config.is_pro)
-        pro_label = QLabel("🔬 专业模式 · 双击刷新 · RA/Dec 网格 · DSO")
-        pro_label.setFont(Theme.caption())
-        pro_label.setStyleSheet(f"color: {Theme.ACCENT};")
-        pb_layout.addWidget(pro_label)
         top_row.addWidget(self.pro_badge)
 
         self.export_btn = QPushButton("📋 导出日志")
@@ -209,61 +201,67 @@ class SkyView(QWidget):
         self.sat_pass_info.setStyleSheet(f"color: {Theme.TEXT_MUTED};")
         self.sat_pass_info.setWordWrap(True)
         self.sat_card.content_layout().addWidget(self.sat_pass_info)
-        sp.addWidget(self.sat_card, 1)
+        sp.addWidget(self.sat_card)
+        sp.addSpacing(4)
 
         self.dso_card = CollapsibleCard("🌀 DSO 筛选 · 今晚最佳")
         fr = QHBoxLayout()
-        fr.setSpacing(4)
-        fl1 = QLabel("亮度≤"); fl1.setFont(Theme.caption()); fl1.setStyleSheet(f"color:{Theme.TEXT_MUTED};")
+        fr.setSpacing(3)
+        fl1 = QLabel("亮≤"); fl1.setFont(Theme.tiny()); fl1.setStyleSheet(f"color:{Theme.TEXT_MUTED};")
         fr.addWidget(fl1)
         self.dso_mag_spin = QSpinBox()
-        self.dso_mag_spin.setRange(1, 20); self.dso_mag_spin.setValue(10); self.dso_mag_spin.setFixedWidth(46)
-        self.dso_mag_spin.setStyleSheet(f"QSpinBox{{background:{Theme.BG_CARD};color:{Theme.TEXT_PRIMARY};border:1px solid {Theme.DIVIDER};border-radius:4px;padding:2px 4px;font-size:10px;}}")
+        self.dso_mag_spin.setRange(1, 20); self.dso_mag_spin.setValue(10); self.dso_mag_spin.setFixedWidth(38)
+        self.dso_mag_spin.setStyleSheet(f"QSpinBox{{background:{Theme.BG_CARD};color:{Theme.TEXT_PRIMARY};border:1px solid {Theme.DIVIDER};border-radius:4px;padding:0px 2px;font-size:8px;}}")
         fr.addWidget(self.dso_mag_spin)
-        fl2 = QLabel("≥"); fl2.setFont(Theme.caption()); fl2.setStyleSheet(f"color:{Theme.TEXT_MUTED};")
+        fl2 = QLabel("高≥"); fl2.setFont(Theme.tiny()); fl2.setStyleSheet(f"color:{Theme.TEXT_MUTED};")
         fr.addWidget(fl2)
         self.dso_alt_spin = QSpinBox()
         self.dso_alt_spin.setRange(0, 90); self.dso_alt_spin.setValue(30); self.dso_alt_spin.setSuffix("°")
-        self.dso_alt_spin.setFixedWidth(46)
-        self.dso_alt_spin.setStyleSheet(f"QSpinBox{{background:{Theme.BG_CARD};color:{Theme.TEXT_PRIMARY};border:1px solid {Theme.DIVIDER};border-radius:4px;padding:2px 4px;font-size:10px;}}")
+        self.dso_alt_spin.setFixedWidth(40)
+        self.dso_alt_spin.setStyleSheet(f"QSpinBox{{background:{Theme.BG_CARD};color:{Theme.TEXT_PRIMARY};border:1px solid {Theme.DIVIDER};border-radius:4px;padding:0px 2px;font-size:8px;}}")
         fr.addWidget(self.dso_alt_spin)
         filter_btn = QPushButton("刷新")
-        filter_btn.setFixedHeight(22)
-        filter_btn.setStyleSheet(f"QPushButton{{background:{Theme.ACCENT};color:white;border:none;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:bold;}}QPushButton:hover{{background:{Theme.ACCENT_DEEP};}}")
+        filter_btn.setFixedHeight(18)
+        filter_btn.setStyleSheet(f"QPushButton{{background:{Theme.ACCENT};color:white;border:none;border-radius:3px;padding:0px 5px;font-size:8px;font-weight:bold;}}QPushButton:hover{{background:{Theme.ACCENT_DEEP};}}")
         filter_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         filter_btn.clicked.connect(self._refresh_dso_list)
         fr.addWidget(filter_btn)
+        fr.addStretch()
         self.dso_card.content_layout().addLayout(fr)
         self.dso_list_label = QLabel("点击「刷新」获取目标")
         self.dso_list_label.setFont(Theme.caption())
         self.dso_list_label.setStyleSheet(f"color:{Theme.TEXT_MUTED};")
         self.dso_list_label.setWordWrap(True)
         self.dso_card.content_layout().addWidget(self.dso_list_label)
-        sp.addWidget(self.dso_card, 1)
+        sp.addWidget(self.dso_card)
+        sp.addSpacing(4)
 
         self.ac_card = CollapsibleCard("✈ ADS-B 航空器追踪")
-        ac_layout = QHBoxLayout()
+        ac_layout = QVBoxLayout()
         ac_layout.setSpacing(4)
+        ac_top = QHBoxLayout()
+        ac_top.setSpacing(4)
         self.ac_label = QLabel("正在获取航班数据...")
-        self.ac_label.setFont(Theme.caption())
+        self.ac_label.setFont(Theme.tiny())
         self.ac_label.setStyleSheet(f"color:{Theme.TEXT_SECONDARY};")
         self.ac_label.setWordWrap(True)
-        ac_layout.addWidget(self.ac_label, 1)
+        ac_top.addWidget(self.ac_label, 1)
         self.ac_refresh_btn = QPushButton("↻")
-        self.ac_refresh_btn.setFixedSize(24, 24)
+        self.ac_refresh_btn.setFixedSize(22, 22)
         self.ac_refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.ac_refresh_btn.setStyleSheet(f"""
             QPushButton {{
                 background: {Theme.BG_CARD}; color: {Theme.TEXT_SECONDARY};
                 border: 1px solid {Theme.DIVIDER}; border-radius: 4px;
-                font-size: 13px; font-weight: bold;
+                font-size: 12px; font-weight: bold;
             }}
             QPushButton:hover {{ background: {Theme.ACCENT_DIM}; color: {Theme.TEXT_PRIMARY}; }}
         """)
         self.ac_refresh_btn.clicked.connect(self._force_refresh_aircraft)
-        ac_layout.addWidget(self.ac_refresh_btn)
-        self.ac_card.content_layout().addLayout(ac_layout)
-        sp.addWidget(self.ac_card, 1)
+        ac_top.addWidget(self.ac_refresh_btn)
+        self.ac_card.content_layout().addLayout(ac_top)
+        sp.addWidget(self.ac_card)
+        sp.addSpacing(4)
 
         # ── 大气质量卡片 ──
         self.atmos_card = CollapsibleCard("🌬️ 大气宁静度 · 专业模式")
@@ -306,7 +304,7 @@ class SkyView(QWidget):
         atmos_layout.addWidget(self.atmos_advice)
 
         self.atmos_card.content_layout().addLayout(atmos_layout)
-        sp.addWidget(self.atmos_card, 1)
+        sp.addWidget(self.atmos_card)
 
         self._atmos_timer = QTimer()
         self._atmos_timer.timeout.connect(self._refresh_atmosphere)
@@ -366,8 +364,8 @@ class SkyView(QWidget):
                     visible = [a for a in ac if a.get("altitude", -90) > 0]
                     lines = [f"✈ 追踪 {len(ac)} 架  |  可见 {len(visible)} 架"]
                     for a in sorted(visible, key=lambda x: -x["altitude"])[:5]:
-                        lines.append(f"  {a['callsign']:>6s}  {a.get('altitude_ft', 0):.0f}ft  "
-                                     f"Alt {a['altitude']:.0f}°  {a.get('distance_km', 0):.0f}km")
+                        lines.append(f"  {a['callsign']:>6s}  {a.get('altitude_ft',0):.0f}ft"
+                                     f"  A{a['altitude']:.0f}°  {a.get('distance_km',0):.0f}km")
                     if len(visible) > 5:
                         lines.append(f"  ...及 {len(visible)-5} 架更多")
                     self._cached_ac = "\n".join(lines)
@@ -485,11 +483,11 @@ class SkyView(QWidget):
             sats = self.star_chart._satellites
             if sats:
                 visible = [s for s in sats if s.get("altitude", -90) > 0]
-                lines = [f"🛰 追踪 {len(sats)} 颗卫星  |  地平线上 {len(visible)} 颗"]
+                lines = [f"🛰 追踪 {len(sats)} 颗  |  地平线上 {len(visible)} 颗"]
                 for s in sats[:3]:
                     alt = s.get("altitude", 0)
                     icon = "↑" if alt > 0 else "↓"
-                    lines.append(f"  {s['name']} {icon} Alt {alt:.0f}°  Az {s['azimuth']:.0f}°")
+                    lines.append(f"  {s['name']} {icon} A{alt:.0f}° Az{s['azimuth']:.0f}°")
                 self._cached_sat_lines = "\n".join(lines)
                 self._cached_sat_visible = len(visible)
 
@@ -546,8 +544,8 @@ class SkyView(QWidget):
         is_pro = mode == "professional"
         self.pro_badge.setVisible(is_pro)
         self.export_btn.setVisible(is_pro)
-        was_camera = self._camera_settings_row.isVisible()
-        self._camera_settings_row.setVisible(is_pro and was_camera)
+        is_camera = DEVICE_CONFIGS[self.star_chart._device_index].get("is_camera", False)
+        self._camera_settings_row.setVisible(is_pro and is_camera)
         for cb in self._toggle_cbs.values():
             cb.setVisible(is_pro)
         if hasattr(self, '_guide_card') and self._guide_card:
@@ -606,8 +604,8 @@ class SkyView(QWidget):
                         visible = [a for a in ac if a.get("altitude", -90) > 0]
                         lines = [f"✈ 追踪 {len(ac)} 架  |  可见 {len(visible)} 架"]
                         for a in sorted(visible, key=lambda x: -x["altitude"])[:5]:
-                            lines.append(f"  {a['callsign']:>6s}  {a.get('altitude_ft', 0):.0f}ft  "
-                                         f"Alt {a['altitude']:.0f}°  {a.get('distance_km', 0):.0f}km")
+                            lines.append(f"  {a['callsign']:>6s}  {a.get('altitude_ft',0):.0f}ft"
+                                         f"  A{a['altitude']:.0f}°  {a.get('distance_km',0):.0f}km")
                         if len(visible) > 5:
                             lines.append(f"  ...及 {len(visible)-5} 架更多")
                         self._cached_ac = "\n".join(lines)

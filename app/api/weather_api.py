@@ -1,80 +1,48 @@
-import requests
-from datetime import datetime, timedelta
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+"""OpenWeatherMap 天气数据访问层。
+
+所有网络请求统一走 :mod:`app.api.client`，复用连接池、带缓存与超时控制，
+显著提升响应速度并避免 UI 卡顿。天气数据按 5 分钟 TTL 缓存。
+"""
+
+from datetime import datetime
 from app.config import config
+from app.api.client import cached_get
+
+WEATHER_URL = "https://api.openweathermap.org/data/2.5/weather"
+FORECAST_URL = "https://api.openweathermap.org/data/2.5/forecast"
+WEATHER_TTL = 300  # 5 分钟
 
 
-def _make_session():
-    s = requests.Session()
-    retries = Retry(total=2, backoff_factor=1, status_forcelist=[500, 502, 503])
-    s.mount("https://", HTTPAdapter(max_retries=retries))
-    s.mount("http://", HTTPAdapter(max_retries=retries))
-    return s
-
-
-def _fetch(url, params, timeout=20):
-    session = _make_session()
-    try:
-        resp = session.get(url, params=params, timeout=timeout)
-        if resp.status_code == 200:
-            return resp.json()
-        if resp.status_code == 401:
-            return {"error": "invalid_key"}
-        return {"error": "http_error", "code": resp.status_code}
-    except requests.exceptions.SSLError:
-        try:
-            http_url = url.replace("https://", "http://")
-            resp = session.get(http_url, params=params, timeout=timeout)
-            if resp.status_code == 200:
-                return resp.json()
-            return {"error": "http_error", "code": resp.status_code}
-        except Exception:
-            return {"error": "ssl_error"}
-    except requests.exceptions.Timeout:
-        return {"error": "timeout"}
-    except requests.exceptions.ConnectionError:
-        return {"error": "connection_error"}
-    except Exception:
-        return {"error": "unknown"}
-
-
-def _fetch_fast(url, params):
-    return _fetch(url, params, timeout=5)
-
-
-def get_weather(timeout=20):
+def get_weather(timeout: int = 20):
+    """获取当前天气。无密钥或网络失败均返回错误字典。"""
     key = config.api_keys.get("openweather")
     if not key:
         return {"error": "no_key"}
     params = {
         "lat": config.latitude, "lon": config.longitude,
-        "appid": key, "units": "metric", "lang": "zh_cn"
+        "appid": key, "units": "metric", "lang": "zh_cn",
     }
-    if timeout <= 5:
-        return _fetch("https://api.openweathermap.org/data/2.5/weather", params, timeout=timeout)
-    result = _fetch("https://api.openweathermap.org/data/2.5/weather", params, timeout=5)
-    if "error" in result:
-        result = _fetch("https://api.openweathermap.org/data/2.5/weather", params, timeout=timeout)
-    return result
+    return cached_get(WEATHER_URL, params, timeout=timeout, ttl=WEATHER_TTL)
 
 
-def get_forecast(timeout=20):
+def get_forecast(timeout: int = 20):
+    """获取 5 天 / 3 小时间隔预报。"""
     key = config.api_keys.get("openweather")
     if not key:
         return {"error": "no_key"}
     params = {
         "lat": config.latitude, "lon": config.longitude,
-        "appid": key, "units": "metric", "lang": "zh_cn", "cnt": 16
+        "appid": key, "units": "metric", "lang": "zh_cn", "cnt": 16,
     }
-    return _fetch("https://api.openweathermap.org/data/2.5/forecast", params)
+    return cached_get(FORECAST_URL, params, timeout=timeout, ttl=WEATHER_TTL)
 
 
-def test_key(api_key):
-    result = _fetch(
-        "https://api.openweathermap.org/data/2.5/weather",
+def test_key(api_key: str):
+    """验证 OpenWeatherMap 密钥是否可用。"""
+    result = cached_get(
+        WEATHER_URL,
         {"lat": 39.9, "lon": 116.4, "appid": api_key, "units": "metric"},
-        timeout=15
+        timeout=15, ttl=0,
     )
     if isinstance(result, dict):
         err = result.get("error")
@@ -83,7 +51,9 @@ def test_key(api_key):
         if err == "http_error":
             return False, f"服务返回错误 ({result.get('code', '?')})"
         if err == "timeout":
-            return False, "连接超时（OpenWeatherMap 在中国大陆可能访问较慢）"
+            return False, "连接超时（OpenWeatherMap 在中国大陆可能需要 VPN 访问）"
+        if err == "ssl_error":
+            return False, "SSL 连接失败（请检查网络/VPN）"
         if err == "no_key":
             return False, "请填写密钥"
     return True, None
@@ -110,7 +80,7 @@ def check_precipitation(forecast_data, hours=24):
         if entry.get("dt", 0) > end:
             break
 
-        pop = entry.get("pop", 0)
+        pop = entry.get("pop") or 0
         max_pop = max(max_pop, pop)
 
         rain = entry.get("rain", {})

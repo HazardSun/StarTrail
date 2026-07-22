@@ -2,8 +2,9 @@ import traceback
 
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
                                QStackedWidget, QLabel, QFrame, QSizePolicy,
-                               QButtonGroup)
-from PySide6.QtCore import Qt, Signal, QTimer
+                               QButtonGroup, QScrollArea)
+from PySide6.QtCore import Qt, Signal, QTimer, QSize
+from PySide6.QtGui import QCursor, QPainter, QColor, QPen
 
 from app.theme import Theme
 from app.config import config
@@ -125,6 +126,56 @@ class ModeToggle(QFrame):
         """
 
 
+class SidebarResizer(QFrame):
+    """可拖拽的侧边栏宽度调节手柄。鼠标按下后左右拖动改变侧边栏宽度。"""
+    width_changed = Signal(int)        # 自拖拽起点的累计水平位移（像素）
+    drag_started = Signal()            # 拖拽开始
+    drag_finished = Signal()           # 拖拽结束（松手）
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(5)
+        self.setCursor(Qt.CursorShape.SplitHCursor)
+        self._dragging = False
+        self._start_x = 0
+        self.setStyleSheet(f"background: transparent;")
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        c = QColor(Theme.ACCENT)
+        c.setAlpha(60 if not self._dragging else 200)
+        pen = QPen(c, 2)
+        p.setPen(pen)
+        cx = self.width() // 2
+        p.drawLine(cx, 4, cx, self.height() - 4)
+
+        # 拖动时画手柄圆点
+        if self._dragging:
+            c.setAlpha(180)
+            p.setBrush(c)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(cx - 3, self.height() // 2 - 6, 6, 12)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = True
+            self._start_x = event.globalPosition().x()
+            self.update()
+            self.drag_started.emit()
+
+    def mouseMoveEvent(self, event):
+        if self._dragging:
+            dx = int(event.globalPosition().x() - self._start_x)
+            self.width_changed.emit(dx)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._dragging:
+            self._dragging = False
+            self.update()
+            self.drag_finished.emit()
+
+
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -157,6 +208,8 @@ class MainWindow(QWidget):
         view.setStyleSheet(f"QWidget#view {{ background: {Theme.BG_PRIMARY}; }}")
         self._views[key] = view
         self.stacked.addWidget(view)
+        if key == "settings" and hasattr(view, "mode_changed"):
+            view.mode_changed.connect(self._on_mode_changed)
         if hasattr(view, "on_mode_changed"):
             try:
                 view.on_mode_changed(config.mode)
@@ -169,13 +222,20 @@ class MainWindow(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
+        self._sidebar_width = config.pro_settings.get("sidebar_width", 240)
+        self._min_sidebar = 180
+        self._max_sidebar = 450
+        self._resize_anchor = self._sidebar_width
+
         self._create_sidebar()
         layout.addWidget(self.sidebar)
 
-        divider = QFrame()
-        divider.setFixedWidth(1)
-        divider.setStyleSheet(f"background: {Theme.DIVIDER};")
-        layout.addWidget(divider)
+        # ── 可拖拽宽度调节手柄（替代静态 divider）──
+        self._resizer = SidebarResizer()
+        self._resizer.drag_started.connect(self._on_resize_start)
+        self._resizer.width_changed.connect(self._on_resize_drag)
+        self._resizer.drag_finished.connect(self._on_resize_release)
+        layout.addWidget(self._resizer)
 
         self._create_content()
         layout.addWidget(self.content, 1)
@@ -183,7 +243,10 @@ class MainWindow(QWidget):
     def _create_sidebar(self):
         self.sidebar = QWidget()
         self.sidebar.setObjectName("sidebar")
-        self.sidebar.setFixedWidth(200)
+        self.sidebar.setMinimumWidth(self._min_sidebar)
+        self.sidebar.setMaximumWidth(self._max_sidebar)
+        self.sidebar.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+        self.sidebar.setFixedWidth(self._sidebar_width)
         self.sidebar.setStyleSheet(f"""
             QWidget#sidebar {{
                 background: {Theme.BG_SIDEBAR};
@@ -213,15 +276,30 @@ class MainWindow(QWidget):
             self.nav_buttons[key] = btn
             sidebar_layout.addWidget(btn)
 
+        # ── Section divider: nav vs tracking panels ──
+        section_div = QFrame()
+        section_div.setFixedHeight(1)
+        section_div.setStyleSheet(f"background: {Theme.DIVIDER}; margin: 8px 8px 0;")
+        sidebar_layout.addWidget(section_div)
+
+        # ── Scrollable tracking panel (single scroll for all cards) ──
+        self._sidebar_scroll = QScrollArea()
+        self._sidebar_scroll.setWidgetResizable(True)
+        self._sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._sidebar_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._sidebar_scroll.setStyleSheet(Theme.scroll_style())
+        self._sidebar_scroll.setVisible(False)
+
         self.sidebar_panel = QWidget()
         self.sidebar_panel.setObjectName("sidebarPanel")
-        self.sidebar_panel.setVisible(False)
         self.sidebar_panel_layout = QVBoxLayout(self.sidebar_panel)
-        self.sidebar_panel_layout.setContentsMargins(0, 4, 0, 0)
-        self.sidebar_panel_layout.setSpacing(4)
-        sidebar_layout.addWidget(self.sidebar_panel, 1)
+        self.sidebar_panel_layout.setContentsMargins(4, 6, 4, 4)
+        self.sidebar_panel_layout.setSpacing(6)
+        self._sidebar_scroll.setWidget(self.sidebar_panel)
 
-        version = QLabel("v1.0.1")
+        sidebar_layout.addWidget(self._sidebar_scroll, 1)
+
+        version = QLabel("v1.0.2")
         version.setFont(Theme.caption())
         version.setStyleSheet(f"color: {Theme.TEXT_MUTED}; padding: 8px;")
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -257,6 +335,24 @@ class MainWindow(QWidget):
             self._hud.setFixedSize(min(280, w - 20), self._hud.sizeHint().height())
             self._hud.move(w - self._hud.width() - 6, h - self._hud.height() - 6)
 
+    def _on_resize_start(self):
+        # 记录拖拽起点时的侧边栏宽度作为锚点，后续按「锚点 + 累计位移」计算，避免重复累加
+        self._resize_anchor = self._sidebar_width
+
+    def _on_resize_drag(self, dx):
+        new_w = max(self._min_sidebar, min(self._max_sidebar, self._resize_anchor + dx))
+        if new_w != self._sidebar_width:
+            self._sidebar_width = new_w
+            self.sidebar.setFixedWidth(new_w)
+            config.pro_settings["sidebar_width"] = new_w
+
+    def _on_resize_release(self):
+        # 松手后持久化宽度，重启后保持
+        try:
+            config.save()
+        except Exception:
+            pass
+
     def _switch_view(self, key):
         if key == self._current_key:
             return
@@ -291,7 +387,9 @@ class MainWindow(QWidget):
 
     def _on_mode_changed(self, mode):
         is_pro = mode == "professional"
-        self.sidebar_panel.setVisible(is_pro)
+        self._sidebar_scroll.setVisible(is_pro)
+        if hasattr(self, 'mode_toggle'):
+            self.mode_toggle._update_display()
         if hasattr(self, '_hud'):
             self._hud.setVisible(is_pro)
             if is_pro:

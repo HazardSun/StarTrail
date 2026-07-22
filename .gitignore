@@ -31,3 +31,9 @@ data/de421.bsp
 # OS
 Thumbs.db
 .DS_Store
+
+# Tool data (WorkBuddy memory, etc.)
+.workbuddy/
+
+# Empty leftover dir
+resources/
